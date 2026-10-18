@@ -8,6 +8,7 @@ import android.content.UriMatcher
 import android.database.Cursor
 import android.database.MatrixCursor
 import android.net.Uri
+import android.os.Bundle
 import android.text.TextUtils
 import android.util.Base64
 import com.coderstory.flyme10.tools.Misc
@@ -89,6 +90,33 @@ abstract class PreferencesProvider : ContentProvider() {
 
     override fun getType(uri: Uri): String? {
         return null
+    }
+
+    /**
+     * 跨进程全量读取：模块的 hook 进程通过 ContentResolver.call("getAll") 拉取
+     * 指定 SharedPreferences 文件的全部键值（新式 libxposed API 无资源回调、
+     * 远程偏好可能为空，此通道始终返回 App 端文件的最新内容）。
+     */
+    override fun call(method: String, arg: String?, extras: Bundle?): Bundle? {
+        if (method == METHOD_GET_ALL) {
+            try {
+                val sp = Utils.getMySharedPreferences(context, arg ?: Misc.SharedPreferencesName)
+                val out = Bundle()
+                for ((key, value) in sp.all) {
+                    when (value) {
+                        is String -> out.putString(key, value)
+                        is Boolean -> out.putBoolean(key, value)
+                        is Int -> out.putInt(key, value)
+                        is Long -> out.putLong(key, value)
+                        is Float -> out.putFloat(key, value)
+                    }
+                }
+                return out
+            } catch (e: Exception) {
+                return null
+            }
+        }
+        return super.call(method, arg, extras)
     }
 
     override fun insert(uri: Uri, values: ContentValues?): Uri? {
@@ -281,6 +309,7 @@ abstract class PreferencesProvider : ContentProvider() {
         const val BOOLEAN_CONTENT_URI_CODE = 105
         const val DELETE_CONTENT_URI_CODE = 106
         const val PUTS_CONTENT_URI_CODE = 107
+        const val METHOD_GET_ALL = "getAll"
 
         /**
          * 表列名

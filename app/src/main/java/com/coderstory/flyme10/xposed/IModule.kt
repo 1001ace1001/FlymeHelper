@@ -1,8 +1,8 @@
 package com.coderstory.flyme10.xposed
 
-import de.robv.android.xposed.IXposedHookZygoteInit.StartupParam
-import de.robv.android.xposed.callbacks.XC_InitPackageResources.InitPackageResourcesParam
-import de.robv.android.xposed.callbacks.XC_LoadPackage.LoadPackageParam
+import com.coderstory.flyme10.xposedcompat.InitPackageResourcesParam
+import com.coderstory.flyme10.xposedcompat.LoadPackageParam
+import com.coderstory.flyme10.xposedcompat.StartupParam
 
 interface IModule {
     fun handleInitPackageResources(respray: InitPackageResourcesParam)

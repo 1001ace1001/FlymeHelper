@@ -6,12 +6,12 @@ import android.content.ComponentName
 import android.os.Build
 import com.coderstory.flyme10.tools.XposedHelper
 import com.coderstory.flyme10.xposed.IModule
-import de.robv.android.xposed.IXposedHookZygoteInit.StartupParam
-import de.robv.android.xposed.XC_MethodHook
-import de.robv.android.xposed.XposedBridge
-import de.robv.android.xposed.XposedHelpers
-import de.robv.android.xposed.callbacks.XC_InitPackageResources.InitPackageResourcesParam
-import de.robv.android.xposed.callbacks.XC_LoadPackage.LoadPackageParam
+import com.coderstory.flyme10.xposedcompat.InitPackageResourcesParam
+import com.coderstory.flyme10.xposedcompat.LoadPackageParam
+import com.coderstory.flyme10.xposedcompat.StartupParam
+import com.coderstory.flyme10.xposedcompat.XC_MethodHook
+import com.coderstory.flyme10.xposedcompat.XposedBridge
+import com.coderstory.flyme10.xposedcompat.XposedHelpers
 import java.util.*
 import java.util.stream.Collectors
 

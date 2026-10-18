@@ -5,7 +5,7 @@ package com.coderstory.flyme10.tools
 import android.os.Handler
 import android.os.Looper
 import android.widget.Toast
-import de.robv.android.xposed.XposedBridge
+import com.coderstory.flyme10.xposedcompat.XposedBridge
 import android.util.Log as ALog
 
 object Log {

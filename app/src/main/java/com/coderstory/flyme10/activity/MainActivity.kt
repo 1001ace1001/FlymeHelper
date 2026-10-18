@@ -19,8 +19,6 @@ import com.coderstory.flyme10.activity.base.BaseActivity
 import com.coderstory.flyme10.fragment.*
 import com.coderstory.flyme10.tools.*
 import com.google.android.material.navigation.NavigationView
-import per.goweii.anylayer.AnyLayer
-import per.goweii.anylayer.Layer
 import kotlin.system.exitProcess
 
 class MainActivity : BaseActivity() {
@@ -128,18 +126,8 @@ class MainActivity : BaseActivity() {
 
     @SuppressLint("PrivateApi")
     private fun checkDialog() {
-        try {
-            getSharedPreferences("test", MODE_WORLD_READABLE)
-        } catch (e: SecurityException) {
-            val normalDialog = AlertDialog.Builder(this@MainActivity)
-            normalDialog.setCancelable(true)
-            normalDialog.setTitle("插件配置初始化失败")
-            normalDialog.setMessage("请在Lsposed中启用本插件，然后手动重启本软件再试")
-            normalDialog.setPositiveButton(
-                "确定"
-            ) { _: DialogInterface?, _: Int -> Process.killProcess(Process.myPid()) }
-            normalDialog.show()
-        }
+        // 旧版通过 getSharedPreferences("test", MODE_WORLD_READABLE) 是否抛 SecurityException
+        // 判断模块是否激活，并在“未激活”时弹窗并强制杀进程。同属方向错误的检测，已一并移除。
 
         try {
             val classType = Class.forName("android.os.SystemProperties")
@@ -174,15 +162,10 @@ class MainActivity : BaseActivity() {
     }
 
     private fun checkEnable() {
-        Log.e("xposed", "flyme助手->isEnable:" + if (isEnable) "true" else "false")
-        if (helper.getBoolean("enableCheck", true) && !isEnable) {
-            AnyLayer.dialog(this@MainActivity)
-                .contentView(R.layout.dialog_xposed_disabled)
-                .cancelableOnTouchOutside(false)
-                .cancelableOnClickKeyBack(false)
-                .onClick({ AnyLayer: Layer, _: View? -> AnyLayer.dismiss() }, id.fl_dialog_yes)
-                .show()
-        }
+        // “插件未在框架中激活”的检测已移除。
+        // 原检测原理：旧框架会把模块注入自身 App 进程，模块 hook 下方的 isEnable 使其返回 true。
+        // libxposed 新 API 严格按 scope.list 注入（模块自身不在作用域内），该检测永远失败，
+        // 属于方向错误的检查。模块是否激活，以 LSPosed 管理器中的勾选状态为准。
     }
 
     //init the default checked fragment

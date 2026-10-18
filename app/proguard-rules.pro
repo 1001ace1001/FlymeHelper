@@ -38,3 +38,7 @@
 -keep public class com.coderstory.flyme10.R$*{
     public static final int *;
 }
+
+# 跨进程配置通道：宿主进程通过 ContentResolver.call("getAll") 调用导出的 provider
+-keep class com.coderstory.flyme10.PreferencesProvider { *; }
+-keep class com.coderstory.flyme10.preferences.PreferencesProvider { *; }

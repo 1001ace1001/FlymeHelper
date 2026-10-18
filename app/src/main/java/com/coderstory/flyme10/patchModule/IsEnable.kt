@@ -3,10 +3,10 @@ package com.coderstory.flyme10.patchModule
 
 import com.coderstory.flyme10.tools.XposedHelper
 import com.coderstory.flyme10.xposed.IModule
-import de.robv.android.xposed.IXposedHookZygoteInit.StartupParam
-import de.robv.android.xposed.XC_MethodReplacement
-import de.robv.android.xposed.callbacks.XC_InitPackageResources.InitPackageResourcesParam
-import de.robv.android.xposed.callbacks.XC_LoadPackage.LoadPackageParam
+import com.coderstory.flyme10.xposedcompat.InitPackageResourcesParam
+import com.coderstory.flyme10.xposedcompat.LoadPackageParam
+import com.coderstory.flyme10.xposedcompat.StartupParam
+import com.coderstory.flyme10.xposedcompat.XC_MethodReplacement
 
 class IsEnable : XposedHelper(), IModule {
     override fun handleInitPackageResources(respray: InitPackageResourcesParam) {}

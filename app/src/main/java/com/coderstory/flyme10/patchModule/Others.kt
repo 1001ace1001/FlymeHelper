@@ -6,13 +6,13 @@ import android.widget.Toast
 import com.coderstory.flyme10.tools.SharedHelper
 import com.coderstory.flyme10.tools.XposedHelper
 import com.coderstory.flyme10.xposed.IModule
-import de.robv.android.xposed.IXposedHookZygoteInit.StartupParam
-import de.robv.android.xposed.XC_MethodHook
-import de.robv.android.xposed.XC_MethodReplacement
-import de.robv.android.xposed.XposedBridge
-import de.robv.android.xposed.XposedHelpers
-import de.robv.android.xposed.callbacks.XC_InitPackageResources.InitPackageResourcesParam
-import de.robv.android.xposed.callbacks.XC_LoadPackage.LoadPackageParam
+import com.coderstory.flyme10.xposedcompat.InitPackageResourcesParam
+import com.coderstory.flyme10.xposedcompat.LoadPackageParam
+import com.coderstory.flyme10.xposedcompat.StartupParam
+import com.coderstory.flyme10.xposedcompat.XC_MethodHook
+import com.coderstory.flyme10.xposedcompat.XC_MethodReplacement
+import com.coderstory.flyme10.xposedcompat.XposedBridge
+import com.coderstory.flyme10.xposedcompat.XposedHelpers
 
 class Others : XposedHelper(), IModule {
     override fun handleInitPackageResources(respray: InitPackageResourcesParam) {}
@@ -70,7 +70,7 @@ class Others : XposedHelper(), IModule {
             if (prefs.getBoolean("enableCTS", false)) {
                 //XposedBridge.log("开启原生安装器");
                 findAndHookMethod(
-                    "com.meizu.safe.security.utils.Utils",
+                    "com.meizu.safe.security.utils.PermissionUtils",
                     param.classLoader,
                     "isCtsRunning",
                     XC_MethodReplacement.returnConstant(true)

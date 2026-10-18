@@ -1,7 +1,14 @@
 package com.coderstory.flyme10.patchModule
 
 
-import android.app.AndroidAppHelper
+import com.coderstory.flyme10.xposedcompat.AndroidAppHelper
+import com.coderstory.flyme10.xposedcompat.InitPackageResourcesParam
+import com.coderstory.flyme10.xposedcompat.LoadPackageParam
+import com.coderstory.flyme10.xposedcompat.StartupParam
+import com.coderstory.flyme10.xposedcompat.XC_MethodHook
+import com.coderstory.flyme10.xposedcompat.XC_MethodReplacement
+import com.coderstory.flyme10.xposedcompat.XposedBridge
+import com.coderstory.flyme10.xposedcompat.XposedHelpers
 import android.app.Service
 import android.content.Context
 import android.content.Intent
@@ -15,13 +22,6 @@ import android.widget.TextView
 import com.coderstory.flyme10.tools.XposedHelper
 import com.coderstory.flyme10.tools.getObjectField
 import com.coderstory.flyme10.xposed.IModule
-import de.robv.android.xposed.IXposedHookZygoteInit.StartupParam
-import de.robv.android.xposed.XC_MethodHook
-import de.robv.android.xposed.XC_MethodReplacement
-import de.robv.android.xposed.XposedBridge
-import de.robv.android.xposed.XposedHelpers
-import de.robv.android.xposed.callbacks.XC_InitPackageResources.InitPackageResourcesParam
-import de.robv.android.xposed.callbacks.XC_LoadPackage.LoadPackageParam
 import java.text.SimpleDateFormat
 import java.util.*
 
@@ -31,14 +31,15 @@ class SystemUi : XposedHelper(), IModule {
 
     override fun handleInitPackageResources(respray: InitPackageResourcesParam) {
         if (respray.packageName == "com.android.systemui") {
-            if (prefs.getBoolean("show_icon_battery_percentage", false)) {
-                respray.res.setReplacement(
-                    respray.packageName,
-                    "string",
-                    "status_bar_settings_battery_meter_format_simple",
-                    "%d%%"
-                )
-            }
+            // 无条件注册、查询时判定开关：配置读取改走 provider 通道后，
+            // 打开/关闭"显示电量百分比"无需重启 systemui 即时生效（重启后也不失效）
+            respray.res.setReplacement(
+                respray.packageName,
+                "string",
+                "status_bar_settings_battery_meter_format_simple",
+                "%d%%",
+                "show_icon_battery_percentage"
+            )
         }
     }
 

@@ -1,11 +1,11 @@
 package com.coderstory.flyme10.tools
 
 import com.coderstory.flyme10.BuildConfig
-import de.robv.android.xposed.XC_MethodHook
-import de.robv.android.xposed.XSharedPreferences
-import de.robv.android.xposed.XposedBridge
-import de.robv.android.xposed.XposedHelpers
-import de.robv.android.xposed.XposedHelpers.ClassNotFoundError
+import com.coderstory.flyme10.xposedcompat.XC_MethodHook
+import com.coderstory.flyme10.xposedcompat.XSharedPreferences
+import com.coderstory.flyme10.xposedcompat.XposedBridge
+import com.coderstory.flyme10.xposedcompat.XposedHelpers
+import com.coderstory.flyme10.xposedcompat.XposedHelpers.ClassNotFoundError
 import java.io.File
 
 open class XposedHelper {

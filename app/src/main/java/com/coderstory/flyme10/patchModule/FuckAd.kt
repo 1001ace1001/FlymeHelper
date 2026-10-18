@@ -5,13 +5,13 @@ import android.content.Context
 import android.webkit.WebView
 import com.coderstory.flyme10.tools.XposedHelper
 import com.coderstory.flyme10.xposed.IModule
-import de.robv.android.xposed.IXposedHookZygoteInit.StartupParam
-import de.robv.android.xposed.XC_MethodHook
-import de.robv.android.xposed.XC_MethodReplacement
-import de.robv.android.xposed.XposedBridge
-import de.robv.android.xposed.XposedHelpers
-import de.robv.android.xposed.callbacks.XC_InitPackageResources.InitPackageResourcesParam
-import de.robv.android.xposed.callbacks.XC_LoadPackage.LoadPackageParam
+import com.coderstory.flyme10.xposedcompat.InitPackageResourcesParam
+import com.coderstory.flyme10.xposedcompat.LoadPackageParam
+import com.coderstory.flyme10.xposedcompat.StartupParam
+import com.coderstory.flyme10.xposedcompat.XC_MethodHook
+import com.coderstory.flyme10.xposedcompat.XC_MethodReplacement
+import com.coderstory.flyme10.xposedcompat.XposedBridge
+import com.coderstory.flyme10.xposedcompat.XposedHelpers
 
 
 class FuckAd : XposedHelper(), IModule {
@@ -204,7 +204,7 @@ class FuckAd : XposedHelper(), IModule {
         if (loadPackageParam.packageName == "com.android.packageinstaller") {
             if (prefs.getBoolean("removeStore", false)) {
                 hookAllMethods(
-                    "com.meizu.safe.security.net.HttpMethods",
+                    "com.meizu.mzstore.MzAppCenterHttp",
                     loadPackageParam.classLoader,
                     "queryPackageInfoFromMzStoreV2",
                     object : XC_MethodHook() {

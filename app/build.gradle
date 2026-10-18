@@ -2,14 +2,14 @@ apply plugin: 'com.android.application'
 apply plugin: 'kotlin-android'
 
 android {
-    compileSdkVersion 33
+    compileSdkVersion 34
     defaultConfig {
         applicationId "com.coderstory.flyme10"
         minSdkVersion 33
         targetSdk 33
         resConfigs "zh-rCN"
-        versionCode 558
-        versionName "4.6.10"
+        versionCode 560
+        versionName "4.6.12"
     }
 
     signingConfigs {
@@ -35,7 +35,8 @@ android {
 }
 
 dependencies {
-    compileOnly fileTree(include: ['*.jar'], dir: 'libs')
+    // Modern Xposed module API (libxposed), replacing the legacy de.robv api-82 jar
+    compileOnly 'io.github.libxposed:api:102.0.0'
     implementation 'com.google.android.material:material:1.11.0'
     implementation 'com.github.goweii:AnyLayer:3.4.3-support'
     implementation "com.github.topjohnwu.libsu:core:3.1.2"

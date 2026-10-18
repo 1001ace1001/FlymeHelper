@@ -1,0 +1,2540 @@
+diff --git a/app/build.gradle b/app/build.gradle
+index 950edc9..48b76e3 100644
+--- a/app/build.gradle
++++ b/app/build.gradle
+@@ -2,14 +2,14 @@ apply plugin: 'com.android.application'
+ apply plugin: 'kotlin-android'
+ 
+ android {
+-    compileSdkVersion 33
++    compileSdkVersion 34
+     defaultConfig {
+         applicationId "com.coderstory.flyme10"
+         minSdkVersion 33
+         targetSdk 33
+         resConfigs "zh-rCN"
+-        versionCode 558
+-        versionName "4.6.10"
++        versionCode 560
++        versionName "4.6.12"
+     }
+ 
+     signingConfigs {
+@@ -35,7 +35,8 @@ android {
+ }
+ 
+ dependencies {
+-    compileOnly fileTree(include: ['*.jar'], dir: 'libs')
++    // Modern Xposed module API (libxposed), replacing the legacy de.robv api-82 jar
++    compileOnly 'io.github.libxposed:api:102.0.0'
+     implementation 'com.google.android.material:material:1.11.0'
+     implementation 'com.github.goweii:AnyLayer:3.4.3-support'
+     implementation "com.github.topjohnwu.libsu:core:3.1.2"
+diff --git a/app/proguard-rules.pro b/app/proguard-rules.pro
+index 1681048..5a3f521 100644
+--- a/app/proguard-rules.pro
++++ b/app/proguard-rules.pro
+@@ -38,3 +38,7 @@
+ -keep public class com.coderstory.flyme10.R$*{
+     public static final int *;
+ }
++
++# 跨进程配置通道：宿主进程通过 ContentResolver.call("getAll") 调用导出的 provider
++-keep class com.coderstory.flyme10.PreferencesProvider { *; }
++-keep class com.coderstory.flyme10.preferences.PreferencesProvider { *; }
+diff --git a/app/src/main/assets/xposed_init b/app/src/main/assets/xposed_init
+deleted file mode 100644
+index f54427a..0000000
+--- a/app/src/main/assets/xposed_init
++++ /dev/null
+@@ -1 +0,0 @@
+-com.coderstory.flyme10.xposed.Start
+\ No newline at end of file
+diff --git a/app/src/main/java/com/coderstory/flyme10/activity/MainActivity.kt b/app/src/main/java/com/coderstory/flyme10/activity/MainActivity.kt
+index ba5033c..1a127d8 100644
+--- a/app/src/main/java/com/coderstory/flyme10/activity/MainActivity.kt
++++ b/app/src/main/java/com/coderstory/flyme10/activity/MainActivity.kt
+@@ -19,8 +19,6 @@ import com.coderstory.flyme10.activity.base.BaseActivity
+ import com.coderstory.flyme10.fragment.*
+ import com.coderstory.flyme10.tools.*
+ import com.google.android.material.navigation.NavigationView
+-import per.goweii.anylayer.AnyLayer
+-import per.goweii.anylayer.Layer
+ import kotlin.system.exitProcess
+ 
+ class MainActivity : BaseActivity() {
+@@ -128,18 +126,8 @@ class MainActivity : BaseActivity() {
+ 
+     @SuppressLint("PrivateApi")
+     private fun checkDialog() {
+-        try {
+-            getSharedPreferences("test", MODE_WORLD_READABLE)
+-        } catch (e: SecurityException) {
+-            val normalDialog = AlertDialog.Builder(this@MainActivity)
+-            normalDialog.setCancelable(true)
+-            normalDialog.setTitle("插件配置初始化失败")
+-            normalDialog.setMessage("请在Lsposed中启用本插件，然后手动重启本软件再试")
+-            normalDialog.setPositiveButton(
+-                "确定"
+-            ) { _: DialogInterface?, _: Int -> Process.killProcess(Process.myPid()) }
+-            normalDialog.show()
+-        }
++        // 旧版通过 getSharedPreferences("test", MODE_WORLD_READABLE) 是否抛 SecurityException
++        // 判断模块是否激活，并在“未激活”时弹窗并强制杀进程。同属方向错误的检测，已一并移除。
+ 
+         try {
+             val classType = Class.forName("android.os.SystemProperties")
+@@ -174,15 +162,10 @@ class MainActivity : BaseActivity() {
+     }
+ 
+     private fun checkEnable() {
+-        Log.e("xposed", "flyme助手->isEnable:" + if (isEnable) "true" else "false")
+-        if (helper.getBoolean("enableCheck", true) && !isEnable) {
+-            AnyLayer.dialog(this@MainActivity)
+-                .contentView(R.layout.dialog_xposed_disabled)
+-                .cancelableOnTouchOutside(false)
+-                .cancelableOnClickKeyBack(false)
+-                .onClick({ AnyLayer: Layer, _: View? -> AnyLayer.dismiss() }, id.fl_dialog_yes)
+-                .show()
+-        }
++        // “插件未在框架中激活”的检测已移除。
++        // 原检测原理：旧框架会把模块注入自身 App 进程，模块 hook 下方的 isEnable 使其返回 true。
++        // libxposed 新 API 严格按 scope.list 注入（模块自身不在作用域内），该检测永远失败，
++        // 属于方向错误的检查。模块是否激活，以 LSPosed 管理器中的勾选状态为准。
+     }
+ 
+     //init the default checked fragment
+diff --git a/app/src/main/java/com/coderstory/flyme10/patchModule/FuckAd.kt b/app/src/main/java/com/coderstory/flyme10/patchModule/FuckAd.kt
+index e3c39dd..9b2cb58 100644
+--- a/app/src/main/java/com/coderstory/flyme10/patchModule/FuckAd.kt
++++ b/app/src/main/java/com/coderstory/flyme10/patchModule/FuckAd.kt
+@@ -5,13 +5,13 @@ import android.content.Context
+ import android.webkit.WebView
+ import com.coderstory.flyme10.tools.XposedHelper
+ import com.coderstory.flyme10.xposed.IModule
+-import de.robv.android.xposed.IXposedHookZygoteInit.StartupParam
+-import de.robv.android.xposed.XC_MethodHook
+-import de.robv.android.xposed.XC_MethodReplacement
+-import de.robv.android.xposed.XposedBridge
+-import de.robv.android.xposed.XposedHelpers
+-import de.robv.android.xposed.callbacks.XC_InitPackageResources.InitPackageResourcesParam
+-import de.robv.android.xposed.callbacks.XC_LoadPackage.LoadPackageParam
++import com.coderstory.flyme10.xposedcompat.InitPackageResourcesParam
++import com.coderstory.flyme10.xposedcompat.LoadPackageParam
++import com.coderstory.flyme10.xposedcompat.StartupParam
++import com.coderstory.flyme10.xposedcompat.XC_MethodHook
++import com.coderstory.flyme10.xposedcompat.XC_MethodReplacement
++import com.coderstory.flyme10.xposedcompat.XposedBridge
++import com.coderstory.flyme10.xposedcompat.XposedHelpers
+ 
+ 
+ class FuckAd : XposedHelper(), IModule {
+@@ -204,7 +204,7 @@ class FuckAd : XposedHelper(), IModule {
+         if (loadPackageParam.packageName == "com.android.packageinstaller") {
+             if (prefs.getBoolean("removeStore", false)) {
+                 hookAllMethods(
+-                    "com.meizu.safe.security.net.HttpMethods",
++                    "com.meizu.mzstore.MzAppCenterHttp",
+                     loadPackageParam.classLoader,
+                     "queryPackageInfoFromMzStoreV2",
+                     object : XC_MethodHook() {
+diff --git a/app/src/main/java/com/coderstory/flyme10/patchModule/HideApp.kt b/app/src/main/java/com/coderstory/flyme10/patchModule/HideApp.kt
+index 09910a3..68c8083 100644
+--- a/app/src/main/java/com/coderstory/flyme10/patchModule/HideApp.kt
++++ b/app/src/main/java/com/coderstory/flyme10/patchModule/HideApp.kt
+@@ -6,12 +6,12 @@ import android.content.ComponentName
+ import android.os.Build
+ import com.coderstory.flyme10.tools.XposedHelper
+ import com.coderstory.flyme10.xposed.IModule
+-import de.robv.android.xposed.IXposedHookZygoteInit.StartupParam
+-import de.robv.android.xposed.XC_MethodHook
+-import de.robv.android.xposed.XposedBridge
+-import de.robv.android.xposed.XposedHelpers
+-import de.robv.android.xposed.callbacks.XC_InitPackageResources.InitPackageResourcesParam
+-import de.robv.android.xposed.callbacks.XC_LoadPackage.LoadPackageParam
++import com.coderstory.flyme10.xposedcompat.InitPackageResourcesParam
++import com.coderstory.flyme10.xposedcompat.LoadPackageParam
++import com.coderstory.flyme10.xposedcompat.StartupParam
++import com.coderstory.flyme10.xposedcompat.XC_MethodHook
++import com.coderstory.flyme10.xposedcompat.XposedBridge
++import com.coderstory.flyme10.xposedcompat.XposedHelpers
+ import java.util.*
+ import java.util.stream.Collectors
+ 
+diff --git a/app/src/main/java/com/coderstory/flyme10/patchModule/IsEnable.kt b/app/src/main/java/com/coderstory/flyme10/patchModule/IsEnable.kt
+index f705af1..d91bc45 100644
+--- a/app/src/main/java/com/coderstory/flyme10/patchModule/IsEnable.kt
++++ b/app/src/main/java/com/coderstory/flyme10/patchModule/IsEnable.kt
+@@ -3,10 +3,10 @@ package com.coderstory.flyme10.patchModule
+ 
+ import com.coderstory.flyme10.tools.XposedHelper
+ import com.coderstory.flyme10.xposed.IModule
+-import de.robv.android.xposed.IXposedHookZygoteInit.StartupParam
+-import de.robv.android.xposed.XC_MethodReplacement
+-import de.robv.android.xposed.callbacks.XC_InitPackageResources.InitPackageResourcesParam
+-import de.robv.android.xposed.callbacks.XC_LoadPackage.LoadPackageParam
++import com.coderstory.flyme10.xposedcompat.InitPackageResourcesParam
++import com.coderstory.flyme10.xposedcompat.LoadPackageParam
++import com.coderstory.flyme10.xposedcompat.StartupParam
++import com.coderstory.flyme10.xposedcompat.XC_MethodReplacement
+ 
+ class IsEnable : XposedHelper(), IModule {
+     override fun handleInitPackageResources(respray: InitPackageResourcesParam) {}
+diff --git a/app/src/main/java/com/coderstory/flyme10/patchModule/Others.kt b/app/src/main/java/com/coderstory/flyme10/patchModule/Others.kt
+index 2c426e6..310b325 100644
+--- a/app/src/main/java/com/coderstory/flyme10/patchModule/Others.kt
++++ b/app/src/main/java/com/coderstory/flyme10/patchModule/Others.kt
+@@ -6,13 +6,13 @@ import android.widget.Toast
+ import com.coderstory.flyme10.tools.SharedHelper
+ import com.coderstory.flyme10.tools.XposedHelper
+ import com.coderstory.flyme10.xposed.IModule
+-import de.robv.android.xposed.IXposedHookZygoteInit.StartupParam
+-import de.robv.android.xposed.XC_MethodHook
+-import de.robv.android.xposed.XC_MethodReplacement
+-import de.robv.android.xposed.XposedBridge
+-import de.robv.android.xposed.XposedHelpers
+-import de.robv.android.xposed.callbacks.XC_InitPackageResources.InitPackageResourcesParam
+-import de.robv.android.xposed.callbacks.XC_LoadPackage.LoadPackageParam
++import com.coderstory.flyme10.xposedcompat.InitPackageResourcesParam
++import com.coderstory.flyme10.xposedcompat.LoadPackageParam
++import com.coderstory.flyme10.xposedcompat.StartupParam
++import com.coderstory.flyme10.xposedcompat.XC_MethodHook
++import com.coderstory.flyme10.xposedcompat.XC_MethodReplacement
++import com.coderstory.flyme10.xposedcompat.XposedBridge
++import com.coderstory.flyme10.xposedcompat.XposedHelpers
+ 
+ class Others : XposedHelper(), IModule {
+     override fun handleInitPackageResources(respray: InitPackageResourcesParam) {}
+@@ -70,7 +70,7 @@ class Others : XposedHelper(), IModule {
+             if (prefs.getBoolean("enableCTS", false)) {
+                 //XposedBridge.log("开启原生安装器");
+                 findAndHookMethod(
+-                    "com.meizu.safe.security.utils.Utils",
++                    "com.meizu.safe.security.utils.PermissionUtils",
+                     param.classLoader,
+                     "isCtsRunning",
+                     XC_MethodReplacement.returnConstant(true)
+diff --git a/app/src/main/java/com/coderstory/flyme10/patchModule/SystemUi.kt b/app/src/main/java/com/coderstory/flyme10/patchModule/SystemUi.kt
+index 384a246..3d8ecbd 100644
+--- a/app/src/main/java/com/coderstory/flyme10/patchModule/SystemUi.kt
++++ b/app/src/main/java/com/coderstory/flyme10/patchModule/SystemUi.kt
+@@ -1,7 +1,14 @@
+ package com.coderstory.flyme10.patchModule
+ 
+ 
+-import android.app.AndroidAppHelper
++import com.coderstory.flyme10.xposedcompat.AndroidAppHelper
++import com.coderstory.flyme10.xposedcompat.InitPackageResourcesParam
++import com.coderstory.flyme10.xposedcompat.LoadPackageParam
++import com.coderstory.flyme10.xposedcompat.StartupParam
++import com.coderstory.flyme10.xposedcompat.XC_MethodHook
++import com.coderstory.flyme10.xposedcompat.XC_MethodReplacement
++import com.coderstory.flyme10.xposedcompat.XposedBridge
++import com.coderstory.flyme10.xposedcompat.XposedHelpers
+ import android.app.Service
+ import android.content.Context
+ import android.content.Intent
+@@ -15,13 +22,6 @@ import android.widget.TextView
+ import com.coderstory.flyme10.tools.XposedHelper
+ import com.coderstory.flyme10.tools.getObjectField
+ import com.coderstory.flyme10.xposed.IModule
+-import de.robv.android.xposed.IXposedHookZygoteInit.StartupParam
+-import de.robv.android.xposed.XC_MethodHook
+-import de.robv.android.xposed.XC_MethodReplacement
+-import de.robv.android.xposed.XposedBridge
+-import de.robv.android.xposed.XposedHelpers
+-import de.robv.android.xposed.callbacks.XC_InitPackageResources.InitPackageResourcesParam
+-import de.robv.android.xposed.callbacks.XC_LoadPackage.LoadPackageParam
+ import java.text.SimpleDateFormat
+ import java.util.*
+ 
+@@ -31,14 +31,15 @@ class SystemUi : XposedHelper(), IModule {
+ 
+     override fun handleInitPackageResources(respray: InitPackageResourcesParam) {
+         if (respray.packageName == "com.android.systemui") {
+-            if (prefs.getBoolean("show_icon_battery_percentage", false)) {
+-                respray.res.setReplacement(
+-                    respray.packageName,
+-                    "string",
+-                    "status_bar_settings_battery_meter_format_simple",
+-                    "%d%%"
+-                )
+-            }
++            // 无条件注册、查询时判定开关：配置读取改走 provider 通道后，
++            // 打开/关闭"显示电量百分比"无需重启 systemui 即时生效（重启后也不失效）
++            respray.res.setReplacement(
++                respray.packageName,
++                "string",
++                "status_bar_settings_battery_meter_format_simple",
++                "%d%%",
++                "show_icon_battery_percentage"
++            )
+         }
+     }
+ 
+diff --git a/app/src/main/java/com/coderstory/flyme10/patchModule/ThemePatcher.kt b/app/src/main/java/com/coderstory/flyme10/patchModule/ThemePatcher.kt
+index 08973f6..715ce05 100644
+--- a/app/src/main/java/com/coderstory/flyme10/patchModule/ThemePatcher.kt
++++ b/app/src/main/java/com/coderstory/flyme10/patchModule/ThemePatcher.kt
+@@ -5,12 +5,12 @@ import android.content.*
+ import android.net.Uri
+ import com.coderstory.flyme10.tools.XposedHelper
+ import com.coderstory.flyme10.xposed.IModule
+-import de.robv.android.xposed.IXposedHookZygoteInit.StartupParam
+-import de.robv.android.xposed.XC_MethodHook
+-import de.robv.android.xposed.XC_MethodReplacement
+-import de.robv.android.xposed.XposedBridge
+-import de.robv.android.xposed.callbacks.XC_InitPackageResources.InitPackageResourcesParam
+-import de.robv.android.xposed.callbacks.XC_LoadPackage.LoadPackageParam
++import com.coderstory.flyme10.xposedcompat.InitPackageResourcesParam
++import com.coderstory.flyme10.xposedcompat.LoadPackageParam
++import com.coderstory.flyme10.xposedcompat.StartupParam
++import com.coderstory.flyme10.xposedcompat.XC_MethodHook
++import com.coderstory.flyme10.xposedcompat.XC_MethodReplacement
++import com.coderstory.flyme10.xposedcompat.XposedBridge
+ 
+ 
+ class ThemePatcher : XposedHelper(), IModule {
+diff --git a/app/src/main/java/com/coderstory/flyme10/preferences/PreferencesProvider.kt b/app/src/main/java/com/coderstory/flyme10/preferences/PreferencesProvider.kt
+index 33849e2..728fbda 100644
+--- a/app/src/main/java/com/coderstory/flyme10/preferences/PreferencesProvider.kt
++++ b/app/src/main/java/com/coderstory/flyme10/preferences/PreferencesProvider.kt
+@@ -8,6 +8,7 @@ import android.content.UriMatcher
+ import android.database.Cursor
+ import android.database.MatrixCursor
+ import android.net.Uri
++import android.os.Bundle
+ import android.text.TextUtils
+ import android.util.Base64
+ import com.coderstory.flyme10.tools.Misc
+@@ -91,6 +92,33 @@ abstract class PreferencesProvider : ContentProvider() {
+         return null
+     }
+ 
++    /**
++     * 跨进程全量读取：模块的 hook 进程通过 ContentResolver.call("getAll") 拉取
++     * 指定 SharedPreferences 文件的全部键值（新式 libxposed API 无资源回调、
++     * 远程偏好可能为空，此通道始终返回 App 端文件的最新内容）。
++     */
++    override fun call(method: String, arg: String?, extras: Bundle?): Bundle? {
++        if (method == METHOD_GET_ALL) {
++            try {
++                val sp = Utils.getMySharedPreferences(context, arg ?: Misc.SharedPreferencesName)
++                val out = Bundle()
++                for ((key, value) in sp.all) {
++                    when (value) {
++                        is String -> out.putString(key, value)
++                        is Boolean -> out.putBoolean(key, value)
++                        is Int -> out.putInt(key, value)
++                        is Long -> out.putLong(key, value)
++                        is Float -> out.putFloat(key, value)
++                    }
++                }
++                return out
++            } catch (e: Exception) {
++                return null
++            }
++        }
++        return super.call(method, arg, extras)
++    }
++
+     override fun insert(uri: Uri, values: ContentValues?): Uri? {
+         getModel(uri) ?: return null
+         val code = mUriMatcher!!.match(uri)
+@@ -281,6 +309,7 @@ abstract class PreferencesProvider : ContentProvider() {
+         const val BOOLEAN_CONTENT_URI_CODE = 105
+         const val DELETE_CONTENT_URI_CODE = 106
+         const val PUTS_CONTENT_URI_CODE = 107
++        const val METHOD_GET_ALL = "getAll"
+ 
+         /**
+          * 表列名
+diff --git a/app/src/main/java/com/coderstory/flyme10/tools/KotlinXposedHelper.kt b/app/src/main/java/com/coderstory/flyme10/tools/KotlinXposedHelper.kt
+index a3bf22d..8c5f303 100644
+--- a/app/src/main/java/com/coderstory/flyme10/tools/KotlinXposedHelper.kt
++++ b/app/src/main/java/com/coderstory/flyme10/tools/KotlinXposedHelper.kt
+@@ -2,455 +2,11 @@
+ 
+ package com.coderstory.flyme10.tools
+ 
+-import android.content.res.XResources
+-import dalvik.system.BaseDexClassLoader
+-import de.robv.android.xposed.XC_MethodHook
+-import de.robv.android.xposed.XC_MethodHook.MethodHookParam
+-import de.robv.android.xposed.XC_MethodReplacement
+-import de.robv.android.xposed.XposedBridge.*
+-import de.robv.android.xposed.XposedHelpers.*
+-import de.robv.android.xposed.callbacks.XC_LayoutInflated
+-import java.lang.reflect.Field
+-import java.lang.reflect.Member
+-import java.util.*
+-
+-typealias MethodHookParam = MethodHookParam
+-typealias Replacer = (MethodHookParam) -> Any?
+-typealias Hooker = (MethodHookParam) -> Unit
+-
+-fun Class<*>.hookMethod(method: String?, vararg args: Any?) = try {
+-    findAndHookMethod(this, method, *args)
+-} catch (e: NoSuchMethodError) {
+-    Log.e(e)
+-    null
+-} catch (e: ClassNotFoundError) {
+-    Log.e(e)
+-    null
+-} catch (e: ClassNotFoundException) {
+-    Log.e(e)
+-    null
+-}
+-
+-fun Member.hookMethod(callback: XC_MethodHook) = try {
+-    hookMethod(this, callback)
+-} catch (e: Throwable) {
+-    Log.e(e)
+-    null
+-}
+-
+-inline fun MethodHookParam.callHooker(crossinline hooker: Hooker) = try {
+-    hooker(this)
+-} catch (e: Throwable) {
+-    Log.e("Error occurred calling hooker on ${this.method}")
+-    Log.e(e)
+-}
+-
+-inline fun MethodHookParam.callReplacer(crossinline replacer: Replacer) = try {
+-    replacer(this)
+-} catch (e: Throwable) {
+-    Log.e("Error occurred calling replacer on ${this.method}")
+-    Log.e(e)
+-    null
+-}
+-
+-inline fun Member.replaceMethod(crossinline replacer: Replacer) =
+-    hookMethod(object : XC_MethodReplacement() {
+-        override fun replaceHookedMethod(param: MethodHookParam) = param.callReplacer(replacer)
+-    })
+-
+-inline fun Member.hookAfterMethod(crossinline hooker: Hooker) =
+-    hookMethod(object : XC_MethodHook() {
+-        override fun afterHookedMethod(param: MethodHookParam) = param.callHooker(hooker)
+-    })
+-
+-inline fun Member.hookBeforeMethod(crossinline hooker: (MethodHookParam) -> Unit) =
+-    hookMethod(object : XC_MethodHook() {
+-        override fun beforeHookedMethod(param: MethodHookParam) = param.callHooker(hooker)
+-    })
+-
+-inline fun Class<*>.hookBeforeMethod(
+-    method: String?,
+-    vararg args: Any?,
+-    crossinline hooker: Hooker
+-) = hookMethod(method, *args, object : XC_MethodHook() {
+-    override fun beforeHookedMethod(param: MethodHookParam) = param.callHooker(hooker)
+-})
+-
+-inline fun Class<*>.hookAfterMethod(
+-    method: String?,
+-    vararg args: Any?,
+-    crossinline hooker: Hooker
+-) = hookMethod(method, *args, object : XC_MethodHook() {
+-    override fun afterHookedMethod(param: MethodHookParam) = param.callHooker(hooker)
+-})
+-
+-inline fun Class<*>.replaceMethod(
+-    method: String?,
+-    vararg args: Any?,
+-    crossinline replacer: Replacer
+-) = hookMethod(method, *args, object : XC_MethodReplacement() {
+-    override fun replaceHookedMethod(param: MethodHookParam) = param.callReplacer(replacer)
+-})
+-
+-fun Class<*>.hookAllMethods(methodName: String?, hooker: XC_MethodHook): Set<XC_MethodHook.Unhook> =
+-    try {
+-        hookAllMethods(this, methodName, hooker)
+-    } catch (e: NoSuchMethodError) {
+-        Log.e(e)
+-        emptySet()
+-    } catch (e: ClassNotFoundError) {
+-        Log.e(e)
+-        emptySet()
+-    } catch (e: ClassNotFoundException) {
+-        Log.e(e)
+-        emptySet()
+-    }
+-
+-inline fun Class<*>.hookBeforeAllMethods(methodName: String?, crossinline hooker: Hooker) =
+-    hookAllMethods(methodName, object : XC_MethodHook() {
+-        override fun beforeHookedMethod(param: MethodHookParam) = param.callHooker(hooker)
+-    })
+-
+-inline fun Class<*>.hookAfterAllMethods(methodName: String?, crossinline hooker: Hooker) =
+-    hookAllMethods(methodName, object : XC_MethodHook() {
+-        override fun afterHookedMethod(param: MethodHookParam) = param.callHooker(hooker)
+-
+-    })
+-
+-inline fun Class<*>.replaceAfterAllMethods(methodName: String?, crossinline replacer: Replacer) =
+-    hookAllMethods(methodName, object : XC_MethodReplacement() {
+-        override fun replaceHookedMethod(param: MethodHookParam) = param.callReplacer(replacer)
+-    })
+-
+-fun Class<*>.hookConstructor(vararg args: Any?) = try {
+-    findAndHookConstructor(this, *args)
+-} catch (e: NoSuchMethodError) {
+-    Log.e(e)
+-    null
+-} catch (e: ClassNotFoundError) {
+-    Log.e(e)
+-    null
+-} catch (e: ClassNotFoundException) {
+-    Log.e(e)
+-    null
+-}
+-
+-inline fun Class<*>.hookBeforeConstructor(vararg args: Any?, crossinline hooker: Hooker) =
+-    hookConstructor(*args, object : XC_MethodHook() {
+-        override fun beforeHookedMethod(param: MethodHookParam) = param.callHooker(hooker)
+-    })
+-
+-inline fun Class<*>.hookAfterConstructor(vararg args: Any?, crossinline hooker: Hooker) =
+-    hookConstructor(*args, object : XC_MethodHook() {
+-        override fun afterHookedMethod(param: MethodHookParam) = param.callHooker(hooker)
+-    })
+-
+-inline fun Class<*>.replaceConstructor(vararg args: Any?, crossinline hooker: Hooker) =
+-    hookConstructor(*args, object : XC_MethodReplacement() {
+-        override fun replaceHookedMethod(param: MethodHookParam) = param.callHooker(hooker)
+-    })
+-
+-fun Class<*>.hookAllConstructors(hooker: XC_MethodHook): Set<XC_MethodHook.Unhook> = try {
+-    hookAllConstructors(this, hooker)
+-} catch (e: NoSuchMethodError) {
+-    Log.e(e)
+-    emptySet()
+-} catch (e: ClassNotFoundError) {
+-    Log.e(e)
+-    emptySet()
+-} catch (e: ClassNotFoundException) {
+-    Log.e(e)
+-    emptySet()
+-}
+-
+-inline fun Class<*>.hookAfterAllConstructors(crossinline hooker: Hooker) =
+-    hookAllConstructors(object : XC_MethodHook() {
+-        override fun afterHookedMethod(param: MethodHookParam) = param.callHooker(hooker)
+-    })
+-
+-inline fun Class<*>.hookBeforeAllConstructors(crossinline hooker: Hooker) =
+-    hookAllConstructors(object : XC_MethodHook() {
+-        override fun beforeHookedMethod(param: MethodHookParam) = param.callHooker(hooker)
+-    })
+-
+-inline fun Class<*>.replaceAfterAllConstructors(crossinline hooker: Hooker) =
+-    hookAllConstructors(object : XC_MethodReplacement() {
+-        override fun replaceHookedMethod(param: MethodHookParam) = param.callHooker(hooker)
+-    })
+-
+-fun String.hookMethod(classLoader: ClassLoader, method: String?, vararg args: Any?) = try {
+-    findClass(classLoader).hookMethod(method, *args)
+-} catch (e: ClassNotFoundError) {
+-    Log.e(e)
+-    null
+-} catch (e: ClassNotFoundException) {
+-    Log.e(e)
+-    null
+-}
+-
+-inline fun String.hookBeforeMethod(
+-    classLoader: ClassLoader,
+-    method: String?,
+-    vararg args: Any?,
+-    crossinline hooker: Hooker
+-) = try {
+-    findClass(classLoader).hookBeforeMethod(method, *args, hooker = hooker)
+-} catch (e: ClassNotFoundError) {
+-    Log.e(e)
+-    null
+-} catch (e: ClassNotFoundException) {
+-    Log.e(e)
+-    null
+-}
+-
+-inline fun String.hookAfterMethod(
+-    classLoader: ClassLoader,
+-    method: String?,
+-    vararg args: Any?,
+-    crossinline hooker: Hooker
+-) = try {
+-    findClass(classLoader).hookAfterMethod(method, *args, hooker = hooker)
+-} catch (e: ClassNotFoundError) {
+-    Log.e(e)
+-    null
+-} catch (e: ClassNotFoundException) {
+-    Log.e(e)
+-    null
+-}
+-
+-inline fun String.replaceMethod(
+-    classLoader: ClassLoader,
+-    method: String?,
+-    vararg args: Any?,
+-    crossinline replacer: Replacer
+-) = try {
+-    findClass(classLoader).replaceMethod(method, *args, replacer = replacer)
+-} catch (e: ClassNotFoundError) {
+-    Log.e(e)
+-    null
+-} catch (e: ClassNotFoundException) {
+-    Log.e(e)
+-    null
+-}
+-
+-fun MethodHookParam.invokeOriginalMethod(): Any? = invokeOriginalMethod(method, thisObject, args)
+-
+-fun Any.getObjectField(field: String?): Any? = getObjectField(this, field)
+-
+-fun Any.getObjectFieldOrNull(field: String?): Any? = try {
+-    getObjectField(this, field)
+-} catch (e: Throwable) {
+-    null
+-}
+-
+-@Suppress("UNCHECKED_CAST")
+-fun <T> Any.getObjectFieldAs(field: String?) = getObjectField(this, field) as T
+-
+-@Suppress("UNCHECKED_CAST")
+-fun <T> Any.getObjectFieldOrNullAs(field: String?) = try {
+-    getObjectField(this, field) as T
+-} catch (e: Throwable) {
+-    null
+-}
+-
+-fun Any.getIntField(field: String?) = getIntField(this, field)
+-
+-fun Any.getIntFieldOrNull(field: String?) = try {
+-    getIntField(this, field)
+-} catch (e: Throwable) {
+-    null
+-}
+-
+-fun Any.getLongField(field: String?) = getLongField(this, field)
+-
+-fun Any.getLongFieldOrNull(field: String?) = try {
+-    getLongField(this, field)
+-} catch (e: Throwable) {
+-    null
+-}
+-
+-fun Any.getBooleanFieldOrNull(field: String?) = try {
+-    getBooleanField(this, field)
+-} catch (e: Throwable) {
+-    null
+-}
+-
+-fun Any.callMethod(methodName: String?, vararg args: Any?): Any? =
+-    callMethod(this, methodName, *args)
+-
+-fun Any.callMethodOrNull(methodName: String?, vararg args: Any?): Any? = try {
+-    callMethod(this, methodName, *args)
+-} catch (e: Throwable) {
+-    null
+-}
+-
+-fun Class<*>.callStaticMethod(methodName: String?, vararg args: Any?): Any? =
+-    callStaticMethod(this, methodName, *args)
+-
+-fun Class<*>.callStaticMethodOrNull(methodName: String?, vararg args: Any?): Any? = try {
+-    callStaticMethod(this, methodName, *args)
+-} catch (e: Throwable) {
+-    null
+-}
+-
+-@Suppress("UNCHECKED_CAST")
+-fun <T> Class<*>.callStaticMethodAs(methodName: String?, vararg args: Any?) =
+-    callStaticMethod(this, methodName, *args) as T
+-
+-@Suppress("UNCHECKED_CAST")
+-fun <T> Class<*>.callStaticMethodOrNullAs(methodName: String?, vararg args: Any?) = try {
+-    callStaticMethod(this, methodName, *args) as T
+-} catch (e: Throwable) {
+-    null
+-}
+-
+-@Suppress("UNCHECKED_CAST")
+-fun <T> Class<*>.getStaticObjectFieldAs(field: String?) = getStaticObjectField(this, field) as T
+-
+-@Suppress("UNCHECKED_CAST")
+-fun <T> Class<*>.getStaticObjectFieldOrNullAs(field: String?) = try {
+-    getStaticObjectField(this, field) as T
+-} catch (e: Throwable) {
+-    null
+-}
+-
+-fun Class<*>.getStaticObjectField(field: String?): Any? = getStaticObjectField(this, field)
+-
+-fun Class<*>.getStaticObjectFieldOrNull(field: String?): Any? = try {
+-    getStaticObjectField(this, field)
+-} catch (e: Throwable) {
+-    null
+-}
+-
+-fun Class<*>.setStaticObjectField(field: String?, obj: Any?) = apply {
+-    setStaticObjectField(this, field, obj)
+-}
+-
+-fun Class<*>.setStaticObjectFieldIfExist(field: String?, obj: Any?) = apply {
+-    try {
+-        setStaticObjectField(this, field, obj)
+-    } catch (ignored: Throwable) {
+-    }
+-}
+-
+-inline fun <reified T> Class<*>.findFieldByExactType(): Field? =
+-    findFirstFieldByExactType(this, T::class.java)
+-
+-fun Class<*>.findFieldByExactType(type: Class<*>): Field? =
+-    findFirstFieldByExactType(this, type)
+-
+-@Suppress("UNCHECKED_CAST")
+-fun <T> Any.callMethodAs(methodName: String?, vararg args: Any?) =
+-    callMethod(this, methodName, *args) as T
+-
+-@Suppress("UNCHECKED_CAST")
+-fun <T> Any.callMethodOrNullAs(methodName: String?, vararg args: Any?) = try {
+-    callMethod(this, methodName, *args) as T
+-} catch (e: Throwable) {
+-    null
+-}
+-
+-fun Any.callMethod(methodName: String?, parameterTypes: Array<Class<*>>, vararg args: Any?): Any? =
+-    callMethod(this, methodName, parameterTypes, *args)
+-
+-fun Any.callMethodOrNull(
+-    methodName: String?,
+-    parameterTypes: Array<Class<*>>,
+-    vararg args: Any?
+-): Any? = try {
+-    callMethod(this, methodName, parameterTypes, *args)
+-} catch (e: Throwable) {
+-    null
+-}
+-
+-fun Class<*>.callStaticMethod(
+-    methodName: String?,
+-    parameterTypes: Array<Class<*>>,
+-    vararg args: Any?
+-): Any? = callStaticMethod(this, methodName, parameterTypes, *args)
+-
+-fun Class<*>.callStaticMethodOrNull(
+-    methodName: String?,
+-    parameterTypes: Array<Class<*>>,
+-    vararg args: Any?
+-): Any? = try {
+-    callStaticMethod(this, methodName, parameterTypes, *args)
+-} catch (e: Throwable) {
+-    null
+-}
+-
+-fun String.findClass(classLoader: ClassLoader?): Class<*> = findClass(this, classLoader)
+-
+-fun String.findClassOrNull(classLoader: ClassLoader?): Class<*>? =
+-    findClassIfExists(this, classLoader)
+-
+-fun Class<*>.new(vararg args: Any?): Any = newInstance(this, *args)
+-
+-fun Class<*>.new(parameterTypes: Array<Class<*>>, vararg args: Any?): Any =
+-    newInstance(this, parameterTypes, *args)
+-
+-fun Class<*>.findField(field: String?): Field = findField(this, field)
+-
+-fun Class<*>.findFieldOrNull(field: String?): Field? = findFieldIfExists(this, field)
+-
+-fun <T> T.setIntField(field: String?, value: Int) = apply {
+-    setIntField(this, field, value)
+-}
+-
+-fun <T> T.setLongField(field: String?, value: Long) = apply {
+-    setLongField(this, field, value)
+-}
+-
+-fun <T> T.setObjectField(field: String?, value: Any?) = apply {
+-    setObjectField(this, field, value)
+-}
+-
+-fun <T> T.setBooleanField(field: String?, value: Boolean) = apply {
+-    setBooleanField(this, field, value)
+-}
+-
+-inline fun XResources.hookLayout(
+-    id: Int,
+-    crossinline hooker: (XC_LayoutInflated.LayoutInflatedParam) -> Unit
+-) {
+-    try {
+-        hookLayout(id, object : XC_LayoutInflated() {
+-            override fun handleLayoutInflated(liparam: LayoutInflatedParam) {
+-                try {
+-                    hooker(liparam)
+-                } catch (e: Throwable) {
+-                    Log.e(e)
+-                }
+-            }
+-        })
+-    } catch (e: Throwable) {
+-        Log.e(e)
+-    }
+-}
+-
+-inline fun XResources.hookLayout(
+-    pkg: String,
+-    type: String,
+-    name: String,
+-    crossinline hooker: (XC_LayoutInflated.LayoutInflatedParam) -> Unit
+-) {
+-    try {
+-        val id = getIdentifier(name, type, pkg)
+-        hookLayout(id, hooker)
+-    } catch (e: Throwable) {
+-        Log.e(e)
+-    }
+-}
+-
+-fun ClassLoader.allClassesList(): List<String> {
+-    var classLoader = this
+-    while (classLoader !is BaseDexClassLoader) {
+-        if (classLoader.parent != null) classLoader = classLoader.parent
+-        else return emptyList()
+-    }
+-    return classLoader.getObjectField("pathList")?.getObjectFieldAs<Array<Any>>("dexElements")
+-        ?.flatMap {
+-            it.getObjectField("dexFile")?.callMethodAs<Enumeration<String>>("entries")?.toList()
+-                .orEmpty()
+-        }.orEmpty()
+-}
++import com.coderstory.flyme10.xposedcompat.XposedHelpers
++
++/**
++ * Minimal legacy-style Kotlin extensions used by the hook code. The old version of this
++ * file contained a large DSL over the legacy Xposed API; it was dead code and has been
++ * dropped during the migration to the modern libxposed API.
++ */
++fun Any.getObjectField(fieldName: String?): Any? = XposedHelpers.getObjectField(this, fieldName)
+diff --git a/app/src/main/java/com/coderstory/flyme10/tools/Log.kt b/app/src/main/java/com/coderstory/flyme10/tools/Log.kt
+index 25e14ee..a5b5424 100644
+--- a/app/src/main/java/com/coderstory/flyme10/tools/Log.kt
++++ b/app/src/main/java/com/coderstory/flyme10/tools/Log.kt
+@@ -5,7 +5,7 @@ package com.coderstory.flyme10.tools
+ import android.os.Handler
+ import android.os.Looper
+ import android.widget.Toast
+-import de.robv.android.xposed.XposedBridge
++import com.coderstory.flyme10.xposedcompat.XposedBridge
+ import android.util.Log as ALog
+ 
+ object Log {
+diff --git a/app/src/main/java/com/coderstory/flyme10/tools/XposedHelper.kt b/app/src/main/java/com/coderstory/flyme10/tools/XposedHelper.kt
+index c53e3b7..3bacc9e 100644
+--- a/app/src/main/java/com/coderstory/flyme10/tools/XposedHelper.kt
++++ b/app/src/main/java/com/coderstory/flyme10/tools/XposedHelper.kt
+@@ -1,11 +1,11 @@
+ package com.coderstory.flyme10.tools
+ 
+ import com.coderstory.flyme10.BuildConfig
+-import de.robv.android.xposed.XC_MethodHook
+-import de.robv.android.xposed.XSharedPreferences
+-import de.robv.android.xposed.XposedBridge
+-import de.robv.android.xposed.XposedHelpers
+-import de.robv.android.xposed.XposedHelpers.ClassNotFoundError
++import com.coderstory.flyme10.xposedcompat.XC_MethodHook
++import com.coderstory.flyme10.xposedcompat.XSharedPreferences
++import com.coderstory.flyme10.xposedcompat.XposedBridge
++import com.coderstory.flyme10.xposedcompat.XposedHelpers
++import com.coderstory.flyme10.xposedcompat.XposedHelpers.ClassNotFoundError
+ import java.io.File
+ 
+ open class XposedHelper {
+diff --git a/app/src/main/java/com/coderstory/flyme10/xposed/IModule.kt b/app/src/main/java/com/coderstory/flyme10/xposed/IModule.kt
+index 61e6750..7d6af5e 100644
+--- a/app/src/main/java/com/coderstory/flyme10/xposed/IModule.kt
++++ b/app/src/main/java/com/coderstory/flyme10/xposed/IModule.kt
+@@ -1,11 +1,11 @@
+ package com.coderstory.flyme10.xposed
+ 
+-import de.robv.android.xposed.IXposedHookZygoteInit.StartupParam
+-import de.robv.android.xposed.callbacks.XC_InitPackageResources.InitPackageResourcesParam
+-import de.robv.android.xposed.callbacks.XC_LoadPackage.LoadPackageParam
++import com.coderstory.flyme10.xposedcompat.InitPackageResourcesParam
++import com.coderstory.flyme10.xposedcompat.LoadPackageParam
++import com.coderstory.flyme10.xposedcompat.StartupParam
+ 
+ interface IModule {
+     fun handleInitPackageResources(respray: InitPackageResourcesParam)
+     fun handleLoadPackage(param: LoadPackageParam)
+     fun initZygote(startupParam: StartupParam?)
+-}
+\ No newline at end of file
++}
+diff --git a/app/src/main/java/com/coderstory/flyme10/xposed/Start.kt b/app/src/main/java/com/coderstory/flyme10/xposed/Start.kt
+index 7c84daf..9e8e4c8 100644
+--- a/app/src/main/java/com/coderstory/flyme10/xposed/Start.kt
++++ b/app/src/main/java/com/coderstory/flyme10/xposed/Start.kt
+@@ -1,39 +1,60 @@
+ package com.coderstory.flyme10.xposed
+ 
++import com.coderstory.flyme10.BuildConfig
++import com.coderstory.flyme10.R
+ import com.coderstory.flyme10.patchModule.FuckAd
+ import com.coderstory.flyme10.patchModule.HideApp
+ import com.coderstory.flyme10.patchModule.IsEnable
+ import com.coderstory.flyme10.patchModule.Others
+ import com.coderstory.flyme10.patchModule.SystemUi
+ import com.coderstory.flyme10.patchModule.ThemePatcher
+-import com.coderstory.flyme10.tools.XposedHelper
+-import de.robv.android.xposed.IXposedHookInitPackageResources
+-import de.robv.android.xposed.IXposedHookLoadPackage
+-import de.robv.android.xposed.IXposedHookZygoteInit
+-import de.robv.android.xposed.IXposedHookZygoteInit.StartupParam
+-import de.robv.android.xposed.XposedBridge
+-import de.robv.android.xposed.callbacks.XC_InitPackageResources.InitPackageResourcesParam
+-import de.robv.android.xposed.callbacks.XC_LoadPackage.LoadPackageParam
++import com.coderstory.flyme10.xposedcompat.InitPackageResourcesParam
++import com.coderstory.flyme10.xposedcompat.LoadPackageParam
++import com.coderstory.flyme10.xposedcompat.ResourceCompat
++import com.coderstory.flyme10.xposedcompat.XposedApi
++import com.coderstory.flyme10.xposedcompat.XposedBridge
++import com.coderstory.flyme10.xposedcompat.XSharedPreferences
++import io.github.libxposed.api.XposedModule
++import io.github.libxposed.api.XposedModuleInterface.ModuleLoadedParam
++import io.github.libxposed.api.XposedModuleInterface.PackageLoadedParam
+ 
+-class Start : XposedHelper(), IXposedHookZygoteInit, IXposedHookLoadPackage,
+-    IXposedHookInitPackageResources {
+-    override fun handleInitPackageResources(resparam: InitPackageResourcesParam) {
+-        Others().handleInitPackageResources(resparam)
+-        SystemUi().handleInitPackageResources(resparam)
+-        ThemePatcher().handleInitPackageResources(resparam)
++/**
++ * Module entry of the modern libxposed API (io.github.libxposed:api:102.0.0).
++ * Registered in META-INF/xposed/java_init.list.
++ */
++class Start : XposedModule() {
++
++    override fun onModuleLoaded(param: ModuleLoadedParam) {
++        XposedApi.api = this
++        XposedBridge.log("Flyme助手已加载（libxposed API $apiVersion，框架 $frameworkName $frameworkVersion）")
++        // 诊断：配置读取来源与数量（远程服务 = 框架 getRemotePreferences，文件 = 直读降级）
++        val probe = XSharedPreferences(BuildConfig.APPLICATION_ID, "UserSettings")
++        XposedBridge.log(
++            "偏好读取: ${probe.all.size} 项配置（远程服务=${probe.isRemote}）"
++        )
++        // The modern API has no resource callbacks; install the deferred replacement hook.
++        ResourceCompat.install()
+     }
+ 
+-    override fun handleLoadPackage(lpparam: LoadPackageParam) {
++    override fun onPackageLoaded(param: PackageLoadedParam) {
++        val lpparam = LoadPackageParam(param.packageName, param.defaultClassLoader)
+         IsEnable().handleLoadPackage(lpparam)
+         HideApp().handleLoadPackage(lpparam)
+         Others().handleLoadPackage(lpparam)
+         ThemePatcher().handleLoadPackage(lpparam)
+         FuckAd().handleLoadPackage(lpparam)
+         SystemUi().handleLoadPackage(lpparam)
+-    }
+ 
+-    override fun initZygote(startupParam: StartupParam) {
+-        XposedBridge.log("Flyme助手已加载")
+-        SystemUi().initZygote(startupParam)
++        // resource replacements (was handleInitPackageResources)
++        val resparam = InitPackageResourcesParam(param.packageName)
++        if (resparam.packageName == "com.meizu.customizecenter") {
++            resparam.res.setReplacement(
++                R.style.ThemeOverlay_MaterialComponents_MaterialAlertDialog_Picker_Date_Header_Text_Day,
++                "阿巴阿巴阿巴~~"
++            )
++        }
++        Others().handleInitPackageResources(resparam)
++        SystemUi().handleInitPackageResources(resparam)
++        ThemePatcher().handleInitPackageResources(resparam)
+     }
+-}
+\ No newline at end of file
++}
+diff --git a/app/src/main/java/com/coderstory/flyme10/xposedcompat/AndroidAppHelper.java b/app/src/main/java/com/coderstory/flyme10/xposedcompat/AndroidAppHelper.java
+new file mode 100644
+index 0000000..2372851
+--- /dev/null
++++ b/app/src/main/java/com/coderstory/flyme10/xposedcompat/AndroidAppHelper.java
+@@ -0,0 +1,61 @@
++package com.coderstory.flyme10.xposedcompat;
++
++import android.app.Application;
++import android.content.Context;
++
++/**
++ * Legacy-shaped helper for information about the current app.
++ */
++public final class AndroidAppHelper {
++
++    /** Stashed host Application, set as soon as attachBaseContext runs (see ResourceCompat). */
++    public static volatile Context hostContext;
++
++    private AndroidAppHelper() {
++    }
++
++    /**
++     * Returns the main {@link android.app.Application} object in the current process.
++     */
++    public static Application currentApplication() {
++        try {
++            Class<?> activityThread = Class.forName("android.app.ActivityThread");
++            Object thread = activityThread.getMethod("currentActivityThread").invoke(null);
++            if (thread == null) {
++                return null;
++            }
++            Object app = activityThread.getMethod("currentApplication").invoke(thread);
++            return app instanceof Application ? (Application) app : null;
++        } catch (Throwable t) {
++            XposedApi.log(t);
++            return null;
++        }
++    }
++
++    /**
++     * Returns any usable {@link Context} in the current process: the host Application
++     * if it exists yet, the context stashed at attachBaseContext, or the ActivityThread
++     * system context. Used to reach ContentResolver before the host Application is
++     * created (module load happens earlier than app code).
++     */
++    public static Context anyContext() {
++        Context c = currentApplication();
++        if (c != null) {
++            return c;
++        }
++        c = hostContext;
++        if (c != null) {
++            return c;
++        }
++        try {
++            Class<?> activityThread = Class.forName("android.app.ActivityThread");
++            Object thread = activityThread.getMethod("currentActivityThread").invoke(null);
++            if (thread != null) {
++                Object sys = activityThread.getMethod("getSystemContext").invoke(thread);
++                return sys instanceof Context ? (Context) sys : null;
++            }
++        } catch (Throwable ignored) {
++        }
++        return null;
++    }
++}
+diff --git a/app/src/main/java/com/coderstory/flyme10/xposedcompat/HookerImpl.java b/app/src/main/java/com/coderstory/flyme10/xposedcompat/HookerImpl.java
+new file mode 100644
+index 0000000..f1069bc
+--- /dev/null
++++ b/app/src/main/java/com/coderstory/flyme10/xposedcompat/HookerImpl.java
+@@ -0,0 +1,62 @@
++package com.coderstory.flyme10.xposedcompat;
++
++import java.util.List;
++
++import io.github.libxposed.api.XposedInterface;
++
++/**
++ * Bridges the legacy before/proceed/after hook model to the interceptor-chain model of the
++ * modern libxposed API.
++ * <p>
++ * Mapping rules (matching the legacy de.robv.android.xposed.XposedBridge semantics):
++ * <ul>
++ *     <li>Callback exceptions in before/after are caught and logged; the call proceeds.</li>
++ *     <li>If {@code setResult}/{@code setThrowable} is called in before, the original
++ *     executable is not invoked (returnEarly).</li>
++ *     <li>after hooks always run, even after an early return.</li>
++ *     <li>Argument modifications made by before hooks are passed to the original executable.</li>
++ *     <li>A throwable set after proceeding is re-thrown to the caller.</li>
++ * </ul>
++ */
++final class HookerImpl implements XposedInterface.Hooker {
++
++    private final XC_MethodHook callback;
++
++    HookerImpl(XC_MethodHook callback) {
++        this.callback = callback;
++    }
++
++    @Override
++    public Object intercept(XposedInterface.Chain chain) throws Throwable {
++        XC_MethodHook.MethodHookParam param = new XC_MethodHook.MethodHookParam();
++        param.method = chain.getExecutable();
++        param.thisObject = chain.getThisObject();
++        List<Object> chainArgs = chain.getArgs();
++        param.args = chainArgs == null ? new Object[0] : chainArgs.toArray();
++
++        try {
++            callback.beforeHookedMethod(param);
++        } catch (Throwable t) {
++            XposedApi.log(t);
++        }
++
++        if (!param.returnEarly) {
++            try {
++                param.setResult(chain.proceed(param.args));
++            } catch (Throwable t) {
++                param.setThrowable(t);
++            }
++        }
++
++        try {
++            callback.afterHookedMethod(param);
++        } catch (Throwable t) {
++            XposedApi.log(t);
++        }
++
++        if (param.hasThrowable()) {
++            throw param.getThrowable();
++        }
++        return param.getResult();
++    }
++}
+diff --git a/app/src/main/java/com/coderstory/flyme10/xposedcompat/InitPackageResourcesParam.java b/app/src/main/java/com/coderstory/flyme10/xposedcompat/InitPackageResourcesParam.java
+new file mode 100644
+index 0000000..754af6c
+--- /dev/null
++++ b/app/src/main/java/com/coderstory/flyme10/xposedcompat/InitPackageResourcesParam.java
+@@ -0,0 +1,21 @@
++package com.coderstory.flyme10.xposedcompat;
++
++/**
++ * Legacy-shaped information about the resources being loaded. The modern libxposed API has
++ * no resource replacement callbacks, so replacements registered on {@link #res} are
++ * deferred and applied once the host framework's Resources are ready (see
++ * {@link ResourceCompat}).
++ */
++public final class InitPackageResourcesParam {
++
++    /** The name of the package for which resources are being loaded. */
++    public final String packageName;
++
++    /** Replacement facade with the legacy XResources.setReplacement signatures. */
++    public final XResCompat res;
++
++    public InitPackageResourcesParam(String packageName) {
++        this.packageName = packageName;
++        this.res = new XResCompat(packageName);
++    }
++}
+diff --git a/app/src/main/java/com/coderstory/flyme10/xposedcompat/LoadPackageParam.java b/app/src/main/java/com/coderstory/flyme10/xposedcompat/LoadPackageParam.java
+new file mode 100644
+index 0000000..cda7fbe
+--- /dev/null
++++ b/app/src/main/java/com/coderstory/flyme10/xposedcompat/LoadPackageParam.java
+@@ -0,0 +1,18 @@
++package com.coderstory.flyme10.xposedcompat;
++
++/**
++ * Legacy-shaped information about the package being loaded.
++ */
++public final class LoadPackageParam {
++
++    /** Name of the package that has just been loaded. */
++    public final String packageName;
++
++    /** Classloader of the package's code. */
++    public final ClassLoader classLoader;
++
++    public LoadPackageParam(String packageName, ClassLoader classLoader) {
++        this.packageName = packageName;
++        this.classLoader = classLoader;
++    }
++}
+diff --git a/app/src/main/java/com/coderstory/flyme10/xposedcompat/ResourceCompat.java b/app/src/main/java/com/coderstory/flyme10/xposedcompat/ResourceCompat.java
+new file mode 100644
+index 0000000..3a08a88
+--- /dev/null
++++ b/app/src/main/java/com/coderstory/flyme10/xposedcompat/ResourceCompat.java
+@@ -0,0 +1,287 @@
++package com.coderstory.flyme10.xposedcompat;
++
++import android.app.Application;
++import android.content.Context;
++import android.content.ContextWrapper;
++import android.content.res.Resources;
++
++import java.lang.reflect.Method;
++import java.util.ArrayList;
++import java.util.List;
++import java.util.concurrent.ConcurrentHashMap;
++
++/**
++ * Deferred resource replacement ("reshook") for the modern libxposed API.
++ * <p>
++ * The modern API (101/102) has no resource replacement callbacks — LSPosed removed the
++ * legacy XResources bridge for modern modules. Replacements registered via
++ * {@link XResCompat} are therefore queued per process and applied as soon as the host
++ * app's {@link Resources} object is available:
++ * <ol>
++ *   <li>Legacy XResources bridge — used when the host framework provides
++ *       {@code setReplacement} on the Resources object (kept for frameworks that still do).</li>
++ *   <li>Fallback emulation — hook the {@code Resources.getString}/{@code getText} getters
++ *       and serve the replacement values by resolved resource id. Same technique as
++ *       EzHookTool / HyperCeiler's ResourcesTool. Covers lookups made from Java code
++ *       (e.g. {@code context.getString(id)}); XML layout/style references that resolve
++ *       natively cannot be intercepted this way and are skipped.</li>
++ * </ol>
++ */
++public final class ResourceCompat {
++
++    private static final class Replacement {
++        final String targetPackage;
++        final int id;
++        final String pkg;
++        final String type;
++        final String name;
++        final Object value;
++        /** Optional preference key that must be true for the replacement to apply. */
++        final String gateKey;
++
++        Replacement(String targetPackage, int id, String pkg, String type, String name, Object value, String gateKey) {
++            this.targetPackage = targetPackage;
++            this.id = id;
++            this.pkg = pkg;
++            this.type = type;
++            this.name = name;
++            this.value = value;
++            this.gateKey = gateKey;
++        }
++    }
++
++    private static final List<Replacement> PENDING = new ArrayList<>();
++    private static boolean appHookInstalled = false;
++
++    /** Replacements served by the emulation layer, by resolved resource id. */
++    private static final ConcurrentHashMap<Integer, Entry> BY_ID = new ConcurrentHashMap<>();
++    private static volatile boolean emulationInstalled = false;
++
++    private static final class Entry {
++        final Object value;
++        final String gateKey;
++
++        Entry(Object value, String gateKey) {
++            this.value = value;
++            this.gateKey = gateKey;
++        }
++    }
++
++    /** Lazily created prefs used to evaluate gated replacements at query time. */
++    private static volatile XSharedPreferences gatePrefs;
++
++    private static boolean gateEnabled(String gateKey) {
++        try {
++            XSharedPreferences p = gatePrefs;
++            if (p == null) {
++                synchronized (ResourceCompat.class) {
++                    p = gatePrefs;
++                    if (p == null) {
++                        p = new XSharedPreferences("com.coderstory.flyme10", "UserSettings");
++                        gatePrefs = p;
++                    }
++                }
++            }
++            return p.getBoolean(gateKey, false);
++        } catch (Throwable t) {
++            return false;
++        }
++    }
++
++    private static Object effectiveValue(Entry e) {
++        if (e.gateKey != null && !gateEnabled(e.gateKey)) {
++            return null;
++        }
++        return e.value;
++    }
++
++    private static final XC_MethodHook STRING_HOOK = new XC_MethodHook() {
++        @Override
++        protected void afterHookedMethod(MethodHookParam param) {
++            Entry e = BY_ID.get(param.args[0]);
++            if (e != null) {
++                Object v = effectiveValue(e);
++                if (v instanceof String) {
++                    param.setResult(v);
++                }
++            }
++        }
++    };
++
++    private static final XC_MethodHook TEXT_HOOK = new XC_MethodHook() {
++        @Override
++        protected void afterHookedMethod(MethodHookParam param) {
++            Entry e = BY_ID.get(param.args[0]);
++            if (e != null) {
++                Object v = effectiveValue(e);
++                if (v instanceof String) {
++                    param.setResult(v);
++                }
++            }
++        }
++    };
++
++    private static final XC_MethodHook FORMAT_HOOK = new XC_MethodHook() {
++        @Override
++        protected void afterHookedMethod(MethodHookParam param) {
++            Entry e = BY_ID.get(param.args[0]);
++            if (e != null) {
++                Object v = effectiveValue(e);
++                if (v instanceof String) {
++                    try {
++                        param.setResult(String.format((String) v, (Object[]) param.args[1]));
++                    } catch (Throwable ignored) {
++                        param.setResult(v);
++                    }
++                }
++            }
++        }
++    };
++
++    private ResourceCompat() {
++    }
++
++    static void addIntReplacement(String targetPackage, int id, Object value) {
++        addIntReplacement(targetPackage, id, value, null);
++    }
++
++    static void addIntReplacement(String targetPackage, int id, Object value, String gateKey) {
++        if (id == 0) {
++            return;
++        }
++        synchronized (PENDING) {
++            PENDING.add(new Replacement(targetPackage, id, null, null, null, value, gateKey));
++        }
++    }
++
++    static void addNameReplacement(String targetPackage, String pkg, String type, String name, Object value) {
++        addNameReplacement(targetPackage, pkg, type, name, value, null);
++    }
++
++    static void addNameReplacement(String targetPackage, String pkg, String type, String name, Object value, String gateKey) {
++        synchronized (PENDING) {
++            PENDING.add(new Replacement(targetPackage, -1, pkg, type, name, value, gateKey));
++        }
++    }
++
++    /**
++     * Installs the hook that applies pending replacements once the app's Resources are
++     * bound. Call once per process from the module entry (onModuleLoaded).
++     */
++    public static synchronized void install() {
++        if (appHookInstalled) {
++            return;
++        }
++        appHookInstalled = true;
++        try {
++            Method attach = ContextWrapper.class.getDeclaredMethod("attachBaseContext", Context.class);
++            XposedBridge.hookMethod(attach, new XC_MethodHook() {
++                @Override
++                protected void afterHookedMethod(MethodHookParam param) throws Throwable {
++                    if (param.thisObject instanceof Application) {
++                        apply((Application) param.thisObject);
++                    }
++                }
++            });
++        } catch (Throwable t) {
++            XposedApi.log(t);
++        }
++    }
++
++    private static void apply(Application app) {
++        // Stash the host context as early as possible: the provider channel
++        // (XSharedPreferences) needs it to query the module app's PreferencesProvider.
++        AndroidAppHelper.hostContext = app;
++        List<Replacement> mine;
++        synchronized (PENDING) {
++            if (PENDING.isEmpty()) {
++                return;
++            }
++            mine = new ArrayList<>(PENDING.size());
++            String pkg = app.getPackageName();
++            for (Replacement r : PENDING) {
++                if (r.targetPackage.equals(pkg)) {
++                    mine.add(r);
++                }
++            }
++        }
++        if (mine.isEmpty()) {
++            return;
++        }
++        Resources res;
++        try {
++            res = app.getResources();
++        } catch (Throwable t) {
++            XposedApi.log(t);
++            return;
++        }
++
++        // 1) Legacy XResources bridge, when the host framework still provides it.
++        int bridged = 0;
++        for (Replacement r : mine) {
++            try {
++                if (r.gateKey != null && !gateEnabled(r.gateKey)) {
++                    continue; // feature switch is off
++                }
++                if (r.id > 0) {
++                    Method m = res.getClass().getMethod("setReplacement", int.class, Object.class);
++                    m.invoke(res, r.id, r.value);
++                } else {
++                    Method m = res.getClass().getMethod("setReplacement",
++                            String.class, String.class, String.class, Object.class);
++                    m.invoke(res, r.pkg, r.type, r.name, r.value);
++                }
++                bridged++;
++            } catch (Throwable t) {
++                break;
++            }
++        }
++        if (bridged == mine.size()) {
++            XposedApi.log("ResourceCompat: 通过旧版XResources桥应用了 " + mine.size() + " 项资源替换 → " + app.getPackageName());
++            return;
++        }
++
++        // 2) Emulation: intercept Resources getters (EzHookTool / HyperCeiler technique).
++        installEmulation(app, res, mine);
++    }
++
++    private static void installEmulation(Application app, Resources res, List<Replacement> mine) {
++        int resolved = 0;
++        synchronized (ResourceCompat.class) {
++            for (Replacement r : mine) {
++                try {
++                    int id;
++                    if (r.id > 0) {
++                        id = r.id;
++                    } else {
++                        id = res.getIdentifier(r.name, r.type, r.pkg);
++                        if (id == 0) {
++                            XposedApi.log("ResourceCompat: 无法解析资源 " + r.pkg + ":" + r.type
++                                    + "/" + r.name + "，跳过模拟替换");
++                            continue;
++                        }
++                    }
++                    BY_ID.put(id, new Entry(r.value, r.gateKey));
++                    resolved++;
++                } catch (Throwable t) {
++                    XposedApi.log(t);
++                }
++            }
++        }
++        if (resolved == 0) {
++            return;
++        }
++        if (!emulationInstalled) {
++            emulationInstalled = true;
++            try {
++                XposedBridge.hookMethod(Resources.class.getMethod("getString", int.class), STRING_HOOK);
++                XposedBridge.hookMethod(Resources.class.getMethod("getText", int.class), TEXT_HOOK);
++                XposedBridge.hookMethod(Resources.class.getMethod("getString", int.class, Object[].class), FORMAT_HOOK);
++                XposedApi.log("ResourceCompat: 已启用资源模拟替换（拦截 Resources getString/getText）");
++            } catch (Throwable t) {
++                XposedApi.log(t);
++            }
++        }
++        XposedApi.log("ResourceCompat: 资源模拟替换已应用 " + resolved + " 项 → " + app.getPackageName());
++    }
++}
+diff --git a/app/src/main/java/com/coderstory/flyme10/xposedcompat/StartupParam.java b/app/src/main/java/com/coderstory/flyme10/xposedcompat/StartupParam.java
+new file mode 100644
+index 0000000..a51a830
+--- /dev/null
++++ b/app/src/main/java/com/coderstory/flyme10/xposedcompat/StartupParam.java
+@@ -0,0 +1,15 @@
++package com.coderstory.flyme10.xposedcompat;
++
++/**
++ * Legacy-shaped zygote init parameter. Kept for source compatibility only; the modern API
++ * no longer injects modules into zygote.
++ */
++public final class StartupParam {
++
++    /** Path to the module APK; always empty in the modern API port. */
++    public final String modulePath = "";
++
++    public String getModulePath() {
++        return modulePath;
++    }
++}
+diff --git a/app/src/main/java/com/coderstory/flyme10/xposedcompat/XC_MethodHook.java b/app/src/main/java/com/coderstory/flyme10/xposedcompat/XC_MethodHook.java
+new file mode 100644
+index 0000000..d5b2039
+--- /dev/null
++++ b/app/src/main/java/com/coderstory/flyme10/xposedcompat/XC_MethodHook.java
+@@ -0,0 +1,116 @@
++package com.coderstory.flyme10.xposedcompat;
++
++import java.lang.reflect.Member;
++
++import io.github.libxposed.api.XposedInterface;
++
++/**
++ * Legacy-shaped method hook callback, re-implemented on top of the modern libxposed API
++ * (io.github.libxposed:api). See {@link HookerImpl} for the bridging logic.
++ */
++public class XC_MethodHook {
++
++    public XC_MethodHook() {
++    }
++
++    /**
++     * @param priority kept for source compatibility with the legacy API, ignored by the
++     *                 modern API (all hooks use the default priority).
++     */
++    public XC_MethodHook(int priority) {
++    }
++
++    protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
++    }
++
++    protected void afterHookedMethod(MethodHookParam param) throws Throwable {
++    }
++
++    public static final class MethodHookParam {
++
++        /** The hooked method/constructor. */
++        public Member method;
++
++        /** The {@code this} reference for an instance method, or {@code null} for static methods. */
++        public Object thisObject;
++
++        /** Arguments to the method call. */
++        public Object[] args;
++
++        private Object result = null;
++        private Throwable throwable = null;
++        boolean returnEarly = false;
++
++        /** Returns the result of the method call. */
++        public Object getResult() {
++            return result;
++        }
++
++        /**
++         * Modify the result of the method call.
++         * <p>If called from {@link #beforeHookedMethod}, it prevents the call to the original method.
++         */
++        public void setResult(Object result) {
++            this.result = result;
++            this.throwable = null;
++            this.returnEarly = true;
++        }
++
++        /** Returns the {@link Throwable} thrown by the method, or {@code null}. */
++        public Throwable getThrowable() {
++            return throwable;
++        }
++
++        /** Returns true if an exception was thrown by the method. */
++        public boolean hasThrowable() {
++            return throwable != null;
++        }
++
++        /**
++         * Modify the exception thrown of the method call.
++         * <p>If called from {@link #beforeHookedMethod}, it prevents the call to the original method.
++         */
++        public void setThrowable(Throwable throwable) {
++            this.throwable = throwable;
++            this.result = null;
++            this.returnEarly = true;
++        }
++
++        /** Returns the result of the method call, or throws the Throwable caused by it. */
++        public Object getResultOrThrowable() throws Throwable {
++            if (throwable != null) {
++                throw throwable;
++            }
++            return result;
++        }
++    }
++
++    /** An object with which the method/constructor can be unhooked. */
++    public class Unhook {
++
++        private final XposedInterface.HookHandle handle;
++
++        Unhook(XposedInterface.HookHandle handle) {
++            this.handle = handle;
++        }
++
++        /** Returns the method/constructor that has been hooked. */
++        public Member getHookedMethod() {
++            return handle == null ? null : handle.getExecutable();
++        }
++
++        public void unhook() {
++            if (handle != null) {
++                handle.unhook();
++            }
++        }
++
++        public XC_MethodHook getCallback() {
++            return XC_MethodHook.this;
++        }
++    }
++
++    Unhook newUnhook(XposedInterface.HookHandle handle) {
++        return new Unhook(handle);
++    }
++}
+diff --git a/app/src/main/java/com/coderstory/flyme10/xposedcompat/XC_MethodReplacement.java b/app/src/main/java/com/coderstory/flyme10/xposedcompat/XC_MethodReplacement.java
+new file mode 100644
+index 0000000..a37c9ac
+--- /dev/null
++++ b/app/src/main/java/com/coderstory/flyme10/xposedcompat/XC_MethodReplacement.java
+@@ -0,0 +1,60 @@
++package com.coderstory.flyme10.xposedcompat;
++
++/**
++ * A special case of {@link XC_MethodHook} which completely replaces the original method.
++ */
++public abstract class XC_MethodReplacement extends XC_MethodHook {
++
++    public XC_MethodReplacement() {
++        super();
++    }
++
++    public XC_MethodReplacement(int priority) {
++        super(priority);
++    }
++
++    @Override
++    protected final void beforeHookedMethod(MethodHookParam param) throws Throwable {
++        try {
++            Object result = replaceHookedMethod(param);
++            param.setResult(result);
++        } catch (Throwable t) {
++            param.setThrowable(t);
++        }
++    }
++
++    @Override
++    protected final void afterHookedMethod(MethodHookParam param) throws Throwable {
++    }
++
++    /**
++     * Shortcut for replacing a method completely. Whatever is returned/thrown here is taken
++     * instead of the result of the original method (which will not be called).
++     *
++     * @param param Information about the method call.
++     * @throws Throwable Anything that is thrown by the callback will be passed on to the original caller.
++     */
++    @SuppressWarnings("unused")
++    protected abstract Object replaceHookedMethod(MethodHookParam param) throws Throwable;
++
++    /**
++     * Creates a callback which always returns a specific value.
++     *
++     * @param result The value that should be returned to callers of the hooked method.
++     */
++    public static XC_MethodReplacement returnConstant(final Object result) {
++        return returnConstant(50, result);
++    }
++
++    /**
++     * Like {@link #returnConstant(Object)}, but allows to specify a priority for the callback.
++     */
++    public static XC_MethodReplacement returnConstant(int priority, final Object result) {
++        return new XC_MethodReplacement(priority) {
++            @Override
++            protected Object replaceHookedMethod(MethodHookParam param) throws Throwable {
++                return result;
++            }
++        };
++    }
++}
+diff --git a/app/src/main/java/com/coderstory/flyme10/xposedcompat/XResCompat.java b/app/src/main/java/com/coderstory/flyme10/xposedcompat/XResCompat.java
+new file mode 100644
+index 0000000..92df3de
+--- /dev/null
++++ b/app/src/main/java/com/coderstory/flyme10/xposedcompat/XResCompat.java
+@@ -0,0 +1,62 @@
++package com.coderstory.flyme10.xposedcompat;
++
++/**
++ * Facade exposing the legacy XResources.setReplacement signatures. Registered replacements
++ * are deferred until the app's Resources object is available (see {@link ResourceCompat}).
++ */
++public final class XResCompat {
++
++    private final String targetPackage;
++
++    XResCompat(String targetPackage) {
++        this.targetPackage = targetPackage;
++    }
++
++    public String getPackageName() {
++        return targetPackage;
++    }
++
++    /**
++     * Replaces the resource with the given numeric id. The id follows the same convention
++     * as the legacy API (i.e. a raw resource id as used by the original code).
++     */
++    public void setReplacement(int id, Object replacement) {
++        ResourceCompat.addIntReplacement(targetPackage, id, replacement);
++    }
++
++    /**
++     * Replaces the resource with the given fully qualified name.
++     */
++    @SuppressWarnings("unused")
++    public void setReplacement(String fullName, Object replacement) {
++        int sep = fullName.lastIndexOf(':');
++        String pkg = sep > 0 ? fullName.substring(0, sep) : targetPackage;
++        String typeAndName = sep > 0 ? fullName.substring(sep + 1) : fullName;
++        int slash = typeAndName.indexOf('/');
++        if (slash <= 0) {
++            throw new IllegalArgumentException("fullName must be of the form package:type/name");
++        }
++        addNameReplacement(pkg, typeAndName.substring(0, slash), typeAndName.substring(slash + 1), replacement);
++    }
++
++    /**
++     * Replaces the resource with the given name (as seen by the module author).
++     */
++    public void setReplacement(String pkg, String type, String name, Object replacement) {
++        addNameReplacement(pkg, type, name, replacement);
++    }
++
++    /**
++     * Replaces the resource with the given name, but only while the boolean
++     * preference {@code gateKey} is enabled. The gate is evaluated whenever the
++     * host queries the resource (emulation layer), so toggling the setting in the
++     * module app takes effect without restarting the host app.
++     */
++    public void setReplacement(String pkg, String type, String name, Object replacement, String gateKey) {
++        ResourceCompat.addNameReplacement(targetPackage, pkg, type, name, replacement, gateKey);
++    }
++
++    private void addNameReplacement(String pkg, String type, String name, Object replacement) {
++        ResourceCompat.addNameReplacement(targetPackage, pkg, type, name, replacement);
++    }
++}
+diff --git a/app/src/main/java/com/coderstory/flyme10/xposedcompat/XSharedPreferences.java b/app/src/main/java/com/coderstory/flyme10/xposedcompat/XSharedPreferences.java
+new file mode 100644
+index 0000000..088e4e5
+--- /dev/null
++++ b/app/src/main/java/com/coderstory/flyme10/xposedcompat/XSharedPreferences.java
+@@ -0,0 +1,326 @@
++package com.coderstory.flyme10.xposedcompat;
++
++import android.net.Uri;
++import android.os.Bundle;
++import android.os.SystemClock;
++import android.util.Xml;
++
++import org.xmlpull.v1.XmlPullParser;
++
++import java.io.File;
++import java.io.FileInputStream;
++import java.util.Collections;
++import java.util.HashMap;
++import java.util.HashSet;
++import java.util.Map;
++import java.util.Set;
++
++import io.github.libxposed.api.XposedInterface;
++
++/**
++ * Legacy-shaped read-only preferences.
++ *
++ * <p>Primary source on modern frameworks (API 101+): the framework's remote
++ * preferences service ({@link XposedInterface#getRemotePreferences}), which
++ * serves the module app's {@code shared_prefs/<name>.xml} to hooked processes
++ * through the framework's privileged daemon. Reading the file directly from a
++ * hooked process is impossible there: the file is {@code 0600} and owned by the
++ * module's uid (the legacy frameworks used to relax permissions; modern ones
++ * do not).</p>
++ *
++ * <p>Fallback (no framework attached, embedded framework, or service failure
++ * on a call): parse the module app's {@code shared_prefs/<name>.xml} file
++ * directly, exactly like the legacy XSharedPreferences did.</p>
++ */
++public final class XSharedPreferences {
++
++    private static final String MODULE_PACKAGE = "com.coderstory.flyme10";
++
++    private final String packageName;
++    private final String prefFileName;   // display name, always with .xml
++    private final String groupName;      // remote preferences group (no .xml)
++    private final File[] candidates;
++    private Map<String, Object> values = Collections.emptyMap();
++    private long lastModified = 0L;
++
++    private android.content.SharedPreferences remote;
++    private boolean remoteChecked = false;
++
++    /**
++     * Process-wide cache of values fetched through the module app's exported
++     * PreferencesProvider (content://...PreferencesProvider, call method "getAll").
++     * This channel always reflects the app's current file, independent of any
++     * framework preference sync. Bounded by a short TTL to keep IPC cheap.
++     */
++    private static final long PROVIDER_TTL_MS = 1000L;
++    private static final Object PROVIDER_LOCK = new Object();
++    private static volatile Map<String, Object> providerCache;
++    private static volatile long providerCacheAt = Long.MIN_VALUE;
++
++    private static Map<String, Object> providerGetAll(String groupName) {
++        synchronized (PROVIDER_LOCK) {
++            long now = SystemClock.elapsedRealtime();
++            Map<String, Object> cached = providerCache;
++            if (cached != null && now - providerCacheAt < PROVIDER_TTL_MS) {
++                return cached;
++            }
++            Map<String, Object> fresh = null;
++            try {
++                android.content.Context ctx = AndroidAppHelper.anyContext();
++                if (ctx != null) {
++                    Uri uri = Uri.parse("content://" + MODULE_PACKAGE + ".PreferencesProvider");
++                    Bundle b = ctx.getContentResolver().call(uri, "getAll", groupName, null);
++                    if (b != null) {
++                        fresh = new HashMap<>();
++                        for (String k : b.keySet()) {
++                            fresh.put(k, b.get(k));
++                        }
++                    }
++                }
++            } catch (Throwable ignored) {
++                fresh = null; // provider not available (early boot / not installed / denied)
++            }
++            if (fresh != null) {
++                providerCache = fresh;
++                providerCacheAt = now;
++                return fresh;
++            }
++            return cached; // stale values are better than none
++        }
++    }
++
++    public XSharedPreferences(String packageName, String prefFileName) {
++        this(packageName, prefFileName,
++                new File("/data/data/" + packageName + "/shared_prefs/" + prefFileName + ".xml"));
++    }
++
++    public XSharedPreferences(String prefFileName) {
++        this(MODULE_PACKAGE, prefFileName);
++    }
++
++    public XSharedPreferences(File file) {
++        this(MODULE_PACKAGE, stripXml(file.getName()), file);
++    }
++
++    private XSharedPreferences(String packageName, String prefFileName, File file) {
++        this.packageName = packageName;
++        this.prefFileName = prefFileName.endsWith(".xml") ? prefFileName : prefFileName + ".xml";
++        this.groupName = stripXml(prefFileName);
++        this.candidates = candidatePaths(file);
++    }
++
++    private static String stripXml(String name) {
++        return name.endsWith(".xml") ? name.substring(0, name.length() - 4) : name;
++    }
++
++    /** Tries to obtain the framework-served remote preferences once. */
++    private synchronized void ensureRemote() {
++        if (remoteChecked) {
++            return;
++        }
++        remoteChecked = true;
++        try {
++            XposedInterface x = XposedApi.api;
++            if (x != null) {
++                remote = x.getRemotePreferences(groupName);
++            }
++        } catch (Throwable t) {
++            // Embedded framework or preferences service unavailable: fall back to the file.
++            remote = null;
++        }
++    }
++
++    /** Whether the framework's remote preferences service is in use. */
++    public boolean isRemote() {
++        ensureRemote();
++        return remote != null;
++    }
++
++    private static File[] candidatePaths(File file) {
++        String path = file.getPath();
++        if (path.startsWith("/data/data/")) {
++            String rest = path.substring("/data/data/".length());
++            return new File[]{
++                    file,
++                    new File("/data/user/0/" + rest),
++                    new File("/data/user_de/0/" + rest),
++            };
++        }
++        if (path.startsWith("/data/user/0/")) {
++            String rest = path.substring("/data/user/0/".length());
++            return new File[]{
++                    file,
++                    new File("/data/data/" + rest),
++                    new File("/data/user_de/0/" + rest),
++            };
++        }
++        if (path.startsWith("/data/user_de/0/")) {
++            String rest = path.substring("/data/user_de/0/".length());
++            return new File[]{
++                    file,
++                    new File("/data/data/" + rest),
++                    new File("/data/user/0/" + rest),
++            };
++        }
++        return new File[]{file};
++    }
++
++    private File currentFile() {
++        for (File f : candidates) {
++            if (f.exists() && f.canRead()) {
++                return f;
++            }
++        }
++        return null;
++    }
++
++    /** Reloads the file if it has changed since the last read. */
++    public synchronized void reload() {
++        File f = currentFile();
++        if (f == null) {
++            values = Collections.emptyMap();
++            return;
++        }
++        long mtime = f.lastModified();
++        if (mtime == lastModified && !values.isEmpty()) {
++            return;
++        }
++        Map<String, Object> parsed = parse(f);
++        if (parsed != null) {
++            values = parsed;
++            lastModified = mtime;
++        }
++    }
++
++    private static Map<String, Object> parse(File file) {
++        Map<String, Object> out = new HashMap<>();
++        XmlPullParser parser = Xml.newPullParser();
++        try (FileInputStream is = new FileInputStream(file)) {
++            parser.setFeature(XmlPullParser.FEATURE_PROCESS_NAMESPACES, false);
++            parser.setInput(is, null);
++            int event = parser.getEventType();
++            while (event != XmlPullParser.END_DOCUMENT) {
++                if (event == XmlPullParser.START_TAG) {
++                    String tag = parser.getName();
++                    if ("boolean".equals(tag)) {
++                        out.put(parser.getAttributeValue(null, "name"),
++                                Boolean.parseBoolean(parser.getAttributeValue(null, "value")));
++                    } else if ("string".equals(tag)) {
++                        String name = parser.getAttributeValue(null, "name");
++                        // text may arrive in multiple chunks
++                        StringBuilder sb = new StringBuilder();
++                        int next = parser.next();
++                        while (next == XmlPullParser.TEXT) {
++                            sb.append(parser.getText());
++                            next = parser.next();
++                        }
++                        out.put(name, sb.toString());
++                        continue;
++                    } else if ("int".equals(tag)) {
++                        out.put(parser.getAttributeValue(null, "name"),
++                                Integer.parseInt(parser.getAttributeValue(null, "value")));
++                    } else if ("long".equals(tag)) {
++                        out.put(parser.getAttributeValue(null, "name"),
++                                Long.parseLong(parser.getAttributeValue(null, "value")));
++                    } else if ("float".equals(tag)) {
++                        out.put(parser.getAttributeValue(null, "name"),
++                                Float.parseFloat(parser.getAttributeValue(null, "value")));
++                    } else if ("set".equals(tag)) {
++                        String name = parser.getAttributeValue(null, "name");
++                        Set<String> set = new HashSet<>();
++                        int depth = parser.getDepth();
++                        // consume nested <string> entries
++                        while (!(parser.next() == XmlPullParser.END_TAG
++                                && "set".equals(parser.getName()) && parser.getDepth() == depth)) {
++                            if (parser.getEventType() == XmlPullParser.START_TAG
++                                    && "string".equals(parser.getName())) {
++                                set.add(parser.nextText());
++                            }
++                        }
++                        out.put(name, set);
++                    }
++                }
++                event = parser.next();
++            }
++            return out;
++        } catch (Throwable t) {
++            return null;
++        }
++    }
++
++    public Map<String, Object> getAll() {
++        ensureRemote();
++        Map<String, Object> out = null;
++        if (remote != null) {
++            try {
++                out = new HashMap<>();
++                for (Map.Entry<String, ?> e : remote.getAll().entrySet()) {
++                    out.put(e.getKey(), e.getValue());
++                }
++                // The remote service can return an empty snapshot right after process
++                // start (or before the app side has ever written anything). Only trust it
++                // when non-empty, otherwise fall back to the provider/file below.
++                if (!out.isEmpty()) {
++                    return out;
++                }
++            } catch (Throwable ignored) {
++                out = null;
++                // fall back to the provider / file for this call
++            }
++        }
++        Map<String, Object> fromProvider = providerGetAll(groupName);
++        if (fromProvider != null && !fromProvider.isEmpty()) {
++            return new HashMap<>(fromProvider);
++        }
++        reload();
++        if (!values.isEmpty()) {
++            return new HashMap<>(values);
++        }
++        return out != null ? out : new HashMap<String, Object>();
++    }
++
++    public boolean getBoolean(String key, boolean defValue) {
++        Object v = getAll().get(key);
++        return v instanceof Boolean ? (Boolean) v : defValue;
++    }
++
++    public String getString(String key, String defValue) {
++        Object v = getAll().get(key);
++        return v instanceof String ? (String) v : defValue;
++    }
++
++    @SuppressWarnings("unused")
++    public int getInt(String key, int defValue) {
++        Object v = getAll().get(key);
++        return v instanceof Integer ? (Integer) v : defValue;
++    }
++
++    @SuppressWarnings("unused")
++    public long getLong(String key, long defValue) {
++        Object v = getAll().get(key);
++        return v instanceof Long ? (Long) v : defValue;
++    }
++
++    @SuppressWarnings("unused")
++    public Set<String> getStringSet(String key, Set<String> defValue) {
++        Object v = getAll().get(key);
++        //noinspection unchecked
++        return v instanceof Set ? (Set<String>) v : defValue;
++    }
++
++    @SuppressWarnings("unused")
++    public String getFile() {
++        File f = currentFile();
++        return f == null ? candidates[0].getPath() : f.getPath();
++    }
++
++    @SuppressWarnings("unused")
++    public String getPrefFileName() {
++        return prefFileName;
++    }
++
++    @SuppressWarnings("unused")
++    public String getPackageName() {
++        return packageName;
++    }
++}
+diff --git a/app/src/main/java/com/coderstory/flyme10/xposedcompat/XposedApi.java b/app/src/main/java/com/coderstory/flyme10/xposedcompat/XposedApi.java
+new file mode 100644
+index 0000000..51cc4f1
+--- /dev/null
++++ b/app/src/main/java/com/coderstory/flyme10/xposedcompat/XposedApi.java
+@@ -0,0 +1,51 @@
++package com.coderstory.flyme10.xposedcompat;
++
++import android.util.Log;
++
++import io.github.libxposed.api.XposedInterface;
++
++/**
++ * Holder of the runtime {@link XposedInterface} instance provided by the modern Xposed
++ * framework (API 101+). Set once by the module entry class in
++ * {@code io.github.libxposed.api.XposedModuleInterface#onModuleLoaded}.
++ */
++public final class XposedApi {
++
++    public static volatile XposedInterface api;
++
++    private static final String TAG = "FlymeHelper";
++
++    private XposedApi() {
++    }
++
++    public static boolean isAvailable() {
++        return api != null;
++    }
++
++    public static XposedInterface get() {
++        XposedInterface x = api;
++        if (x == null) {
++            throw new IllegalStateException("Xposed framework is not attached to this module");
++        }
++        return x;
++    }
++
++    public static void log(String msg) {
++        XposedInterface x = api;
++        if (x != null) {
++            x.log(Log.INFO, TAG, msg);
++        } else {
++            // Module app process without the framework attached (e.g. plain app usage)
++            Log.i(TAG, msg);
++        }
++    }
++
++    public static void log(Throwable t) {
++        XposedInterface x = api;
++        if (x != null) {
++            x.log(Log.ERROR, TAG, Log.getStackTraceString(t), t);
++        } else {
++            Log.e(TAG, Log.getStackTraceString(t));
++        }
++    }
++}
+diff --git a/app/src/main/java/com/coderstory/flyme10/xposedcompat/XposedBridge.java b/app/src/main/java/com/coderstory/flyme10/xposedcompat/XposedBridge.java
+new file mode 100644
+index 0000000..eaf73ac
+--- /dev/null
++++ b/app/src/main/java/com/coderstory/flyme10/xposedcompat/XposedBridge.java
+@@ -0,0 +1,89 @@
++package com.coderstory.flyme10.xposedcompat;
++
++import java.lang.reflect.Constructor;
++import java.lang.reflect.Executable;
++import java.lang.reflect.Member;
++import java.lang.reflect.Method;
++import java.util.HashSet;
++import java.util.Set;
++
++import io.github.libxposed.api.XposedInterface;
++
++/**
++ * Legacy-shaped static hook API, re-implemented on top of the modern libxposed API.
++ */
++public final class XposedBridge {
++
++    private XposedBridge() {
++    }
++
++    public static void log(String text) {
++        XposedApi.log(text);
++    }
++
++    public static void log(Throwable t) {
++        XposedApi.log(t);
++    }
++
++    /**
++     * Hooks a method or constructor with the given callback.
++     */
++    public static XC_MethodHook.Unhook hookMethod(Member hookMethod, XC_MethodHook callback) {
++        if (!(hookMethod instanceof Executable)) {
++            throw new IllegalArgumentException("Only methods and constructors can be hooked: " + hookMethod);
++        }
++        XposedInterface x = XposedApi.get();
++        Executable executable = (Executable) hookMethod;
++        try {
++            executable.setAccessible(true);
++        } catch (Throwable ignored) {
++        }
++        XposedInterface.HookHandle handle = x.hook(executable).intercept(new HookerImpl(callback));
++        return callback.newUnhook(handle);
++    }
++
++    /**
++     * Hook all methods with a certain name in a class. In addition to the declared methods
++     * of the class itself, inherited methods are hooked as well so that e.g. hooks on
++     * framework methods implemented by a parent class work.
++     */
++    public static Set<XC_MethodHook.Unhook> hookAllMethods(Class<?> hookClass, String methodName,
++                                                            XC_MethodHook callback) {
++        Set<XC_MethodHook.Unhook> result = new HashSet<>();
++        if (hookClass == null || methodName == null) {
++            return result;
++        }
++        Class<?> c = hookClass;
++        while (c != null) {
++            for (Method m : c.getDeclaredMethods()) {
++                if (m.getName().equals(methodName)) {
++                    try {
++                        result.add(hookMethod(m, callback));
++                    } catch (Throwable t) {
++                        log(t);
++                    }
++                }
++            }
++            c = c.getSuperclass();
++        }
++        return result;
++    }
++
++    /**
++     * Hook all constructors of a class.
++     */
++    public static Set<XC_MethodHook.Unhook> hookAllConstructors(Class<?> hookClass, XC_MethodHook callback) {
++        Set<XC_MethodHook.Unhook> result = new HashSet<>();
++        if (hookClass == null) {
++            return result;
++        }
++        for (Constructor<?> ctor : hookClass.getDeclaredConstructors()) {
++            try {
++                result.add(hookMethod(ctor, callback));
++            } catch (Throwable t) {
++                log(t);
++            }
++        }
++        return result;
++    }
++}
+diff --git a/app/src/main/java/com/coderstory/flyme10/xposedcompat/XposedHelpers.java b/app/src/main/java/com/coderstory/flyme10/xposedcompat/XposedHelpers.java
+new file mode 100644
+index 0000000..84f1b6f
+--- /dev/null
++++ b/app/src/main/java/com/coderstory/flyme10/xposedcompat/XposedHelpers.java
+@@ -0,0 +1,301 @@
++package com.coderstory.flyme10.xposedcompat;
++
++import java.lang.reflect.Constructor;
++import java.lang.reflect.Field;
++import java.lang.reflect.Member;
++import java.lang.reflect.Method;
++import java.lang.reflect.Modifier;
++import java.util.ArrayList;
++import java.util.Arrays;
++import java.util.List;
++
++/**
++ * Legacy-shaped reflection helpers, re-implemented with plain Java reflection (no runtime
++ * dependency on the legacy Xposed bridge).
++ */
++public final class XposedHelpers {
++
++    private XposedHelpers() {
++    }
++
++    public static class ClassNotFoundError extends Error {
++
++        private static final long serialVersionUID = -9179845689965300330L;
++
++        public ClassNotFoundError(String detailMessage) {
++            super(detailMessage);
++        }
++
++        public ClassNotFoundError(Throwable cause) {
++            super(cause);
++        }
++    }
++
++    // ------------------------------------------------------------------ classes
++
++    public static Class<?> findClass(String className, ClassLoader classLoader) {
++        ClassLoader cl = classLoader;
++        if (cl == null) {
++            cl = XposedHelpers.class.getClassLoader();
++        }
++        try {
++            return Class.forName(className, false, cl);
++        } catch (ClassNotFoundException e) {
++            throw new ClassNotFoundError(e);
++        }
++    }
++
++    // ------------------------------------------------------------------ methods
++
++    public static XC_MethodHook.Unhook findAndHookMethod(String className, ClassLoader classLoader,
++                                                         String methodName, Object... parameterTypesAndCallback) {
++        return findAndHookMethod(findClass(className, classLoader), methodName, parameterTypesAndCallback);
++    }
++
++    public static XC_MethodHook.Unhook findAndHookMethod(Class<?> clazz, String methodName,
++                                                          Object... parameterTypesAndCallback) {
++        if (parameterTypesAndCallback.length == 0) {
++            throw new IllegalArgumentException("No hook callback given. You must pass at least one parameter" +
++                    " which is the callback to register (and optionally parameter types before it).");
++        }
++        XC_MethodHook callback = extractCallback(parameterTypesAndCallback);
++        Class<?>[] types = resolveParameterTypes(clazz, parameterTypesAndCallback);
++        Method m = findMethodExact(clazz, methodName, types);
++        return XposedBridge.hookMethod(m, callback);
++    }
++
++    public static XC_MethodHook.Unhook findAndHookConstructor(String className, ClassLoader classLoader,
++                                                               Object... parameterTypesAndCallback) {
++        return findAndHookConstructor(findClass(className, classLoader), parameterTypesAndCallback);
++    }
++
++    public static XC_MethodHook.Unhook findAndHookConstructor(Class<?> clazz, Object... parameterTypesAndCallback) {
++        XC_MethodHook callback = extractCallback(parameterTypesAndCallback);
++        Class<?>[] types = resolveParameterTypes(clazz, parameterTypesAndCallback);
++        Constructor<?> ctor = findConstructorExact(clazz, types);
++        return XposedBridge.hookMethod(ctor, callback);
++    }
++
++    private static XC_MethodHook extractCallback(Object[] parameterTypesAndCallback) {
++        Object last = parameterTypesAndCallback[parameterTypesAndCallback.length - 1];
++        if (!(last instanceof XC_MethodHook)) {
++            throw new IllegalArgumentException("Last parameter must be an XC_MethodHook callback");
++        }
++        return (XC_MethodHook) last;
++    }
++
++    private static Class<?>[] resolveParameterTypes(Class<?> clazz, Object[] parameterTypesAndCallback) {
++        int n = parameterTypesAndCallback.length - 1;
++        Class<?>[] types = new Class<?>[n];
++        for (int i = 0; i < n; i++) {
++            Object t = parameterTypesAndCallback[i];
++            if (t instanceof Class) {
++                types[i] = (Class<?>) t;
++            } else if (t instanceof String) {
++                types[i] = findClass((String) t, clazz.getClassLoader());
++            } else if (t == null) {
++                throw new IllegalArgumentException("Parameter type may not be null");
++            } else {
++                throw new IllegalArgumentException("Parameter type must be a Class or String, got " + t.getClass());
++            }
++        }
++        return types;
++    }
++
++    /** Exact lookup walking the class hierarchy, falling back to public method lookup. */
++    public static Method findMethodExact(Class<?> clazz, String methodName, Class<?>... parameterTypes) {
++        Class<?> c = clazz;
++        while (c != null) {
++            for (Method m : c.getDeclaredMethods()) {
++                if (m.getName().equals(methodName) && Arrays.equals(m.getParameterTypes(), parameterTypes)) {
++                    return m;
++                }
++            }
++            c = c.getSuperclass();
++        }
++        try {
++            return clazz.getMethod(methodName, parameterTypes);
++        } catch (NoSuchMethodException ignored) {
++        }
++        throw new NoSuchMethodError("Method " + methodName + " with parameters " +
++                Arrays.toString(parameterTypes) + " not found in " + clazz.getName());
++    }
++
++    public static Constructor<?> findConstructorExact(Class<?> clazz, Class<?>... parameterTypes) {
++        for (Constructor<?> ctor : clazz.getDeclaredConstructors()) {
++            if (Arrays.equals(ctor.getParameterTypes(), parameterTypes)) {
++                return ctor;
++            }
++        }
++        throw new NoSuchMethodError("Constructor with parameters " + Arrays.toString(parameterTypes) +
++                " not found in " + clazz.getName());
++    }
++
++    // ------------------------------------------------------------------ fields
++
++    public static Field findField(Class<?> originClass, String fieldName) {
++        for (Class<?> c = originClass; c != null; c = c.getSuperclass()) {
++            try {
++                Field f = c.getDeclaredField(fieldName);
++                f.setAccessible(true);
++                return f;
++            } catch (NoSuchFieldException ignored) {
++            }
++        }
++        throw new NoSuchFieldError("Field " + fieldName + " not found in " + originClass.getName());
++    }
++
++    public static Object getObjectField(Object obj, String fieldName) {
++        try {
++            return findField(obj.getClass(), fieldName).get(obj);
++        } catch (Throwable t) {
++            throw rethrow("get field " + fieldName + " of " + obj.getClass(), t);
++        }
++    }
++
++    public static void setObjectField(Object obj, String fieldName, Object value) {
++        try {
++            findField(obj.getClass(), fieldName).set(obj, value);
++        } catch (Throwable t) {
++            throw rethrow("set field " + fieldName + " of " + obj.getClass(), t);
++        }
++    }
++
++    public static void setBooleanField(Object obj, String fieldName, boolean value) {
++        try {
++            findField(obj.getClass(), fieldName).set(obj, value);
++        } catch (Throwable t) {
++            throw rethrow("set field " + fieldName + " of " + obj.getClass(), t);
++        }
++    }
++
++    public static int getIntField(Object obj, String fieldName) {
++        try {
++            Field f = findField(obj.getClass(), fieldName);
++            if (f.getType() == int.class) {
++                return f.getInt(obj);
++            }
++            Object v = f.get(obj);
++            return v instanceof Number ? ((Number) v).intValue() : 0;
++        } catch (Throwable t) {
++            throw rethrow("get field " + fieldName + " of " + obj.getClass(), t);
++        }
++    }
++
++    // ------------------------------------------------------------------ calls
++
++    public static Object callMethod(Object obj, String methodName, Object... args) {
++        try {
++            Method m = findMethodBestMatch(obj.getClass(), methodName, args);
++            m.setAccessible(true);
++            return m.invoke(obj, args);
++        } catch (Throwable t) {
++            throw rethrow("call " + methodName + " of " + obj.getClass(), t);
++        }
++    }
++
++    @SuppressWarnings("unused")
++    public static Object callStaticMethod(Class<?> clazz, String methodName, Object... args) {
++        try {
++            Method m = findMethodBestMatch(clazz, methodName, args);
++            m.setAccessible(true);
++            return m.invoke(null, args);
++        } catch (Throwable t) {
++            throw rethrow("call static " + methodName + " of " + clazz, t);
++        }
++    }
++
++    private static Method findMethodBestMatch(Class<?> clazz, String methodName, Object... args) {
++        List<Method> candidates = new ArrayList<>();
++        for (Class<?> c = clazz; c != null; c = c.getSuperclass()) {
++            for (Method m : c.getDeclaredMethods()) {
++                if (m.getName().equals(methodName) && m.getParameterTypes().length == args.length) {
++                    if (isCompatible(m.getParameterTypes(), args)) {
++                        candidates.add(m);
++                    }
++                }
++            }
++        }
++        if (candidates.isEmpty()) {
++            try {
++                return clazz.getMethod(methodName, typesOf(args));
++            } catch (NoSuchMethodException e) {
++                throw new NoSuchMethodError("Method " + methodName + " matching " +
++                        Arrays.toString(args) + " not found in " + clazz.getName());
++            }
++        }
++        // Prefer an exact signature match if available
++        for (Method m : candidates) {
++            if (Arrays.equals(m.getParameterTypes(), typesOf(args))) {
++                return m;
++            }
++        }
++        return candidates.get(0);
++    }
++
++    private static Class<?>[] typesOf(Object... args) {
++        Class<?>[] types = new Class<?>[args.length];
++        for (int i = 0; i < args.length; i++) {
++            types[i] = args[i] == null ? null : args[i].getClass();
++        }
++        return types;
++    }
++
++    private static boolean isCompatible(Class<?>[] paramTypes, Object... args) {
++        if (paramTypes.length != args.length) {
++            return false;
++        }
++        for (int i = 0; i < paramTypes.length; i++) {
++            Object arg = args[i];
++            Class<?> p = paramTypes[i];
++            if (arg == null) {
++                if (p.isPrimitive()) {
++                    return false;
++                }
++                continue;
++            }
++            Class<?> a = arg.getClass();
++            if (p.isPrimitive()) {
++                p = box(p);
++                if (p == null) {
++                    return false;
++                }
++            }
++            if (!p.isAssignableFrom(a)) {
++                return false;
++            }
++        }
++        return true;
++    }
++
++    private static Class<?> box(Class<?> primitive) {
++        if (primitive == int.class) return Integer.class;
++        if (primitive == long.class) return Long.class;
++        if (primitive == short.class) return Short.class;
++        if (primitive == byte.class) return Byte.class;
++        if (primitive == boolean.class) return Boolean.class;
++        if (primitive == char.class) return Character.class;
++        if (primitive == float.class) return Float.class;
++        if (primitive == double.class) return Double.class;
++        return null;
++    }
++
++    private static RuntimeException rethrow(String what, Throwable t) {
++        Throwable cause = t;
++        while (cause.getCause() != null && cause != cause.getCause()) {
++            cause = cause.getCause();
++        }
++        if (cause instanceof RuntimeException) {
++            return (RuntimeException) cause;
++        }
++        if (cause instanceof Error) {
++            throw (Error) cause;
++        }
++        return new RuntimeException("Failed to " + what + ": " + cause, cause);
++    }
++
++    @SuppressWarnings("unused")
++    private static boolean isStatic(Member m) {
++        return Modifier.isStatic(m.getModifiers());
++    }
++}
+diff --git a/app/src/main/resources/META-INF/xposed/java_init.list b/app/src/main/resources/META-INF/xposed/java_init.list
+new file mode 100644
+index 0000000..f57fb4b
+--- /dev/null
++++ b/app/src/main/resources/META-INF/xposed/java_init.list
+@@ -0,0 +1 @@
++com.coderstory.flyme10.xposed.Start
+diff --git a/app/src/main/resources/META-INF/xposed/module.prop b/app/src/main/resources/META-INF/xposed/module.prop
+new file mode 100644
+index 0000000..fb8cd9a
+--- /dev/null
++++ b/app/src/main/resources/META-INF/xposed/module.prop
+@@ -0,0 +1,4 @@
++minApiVersion=101
++targetApiVersion=102
++exceptionMode=protective
++staticScope=true
+diff --git a/app/src/main/resources/META-INF/xposed/scope.list b/app/src/main/resources/META-INF/xposed/scope.list
+new file mode 100644
+index 0000000..8bcbc1d
+--- /dev/null
++++ b/app/src/main/resources/META-INF/xposed/scope.list
+@@ -0,0 +1,10 @@
++android
++com.android.packageinstaller
++com.android.systemui
++com.meizu.mznfcpay
++com.meizu.flyme.update
++com.meizu.flyme.launcher
++com.meizu.customizecenter
++com.hy.weather.mz
++com.android.browser
++com.meizu.flyme.weather

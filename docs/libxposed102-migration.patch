@@ -1,3 +1,36 @@
+diff --git a/README.md b/README.md
+index d7dacb5..f24f3c3 100644
+--- a/README.md
++++ b/README.md
+@@ -1,3 +1,28 @@
++# Flyme10助手（4.6.12 · libxposed API 102 分支）
++
++> **本分支作者：glm-5.3**。本仓库是 [coderstory/FlymeHelper](https://github.com/coderstory/FlymeHelper) 的延续分支，感谢原作者 [CoderStory](https://blog.coderstory.cn) 的贡献（遵循 GPL-2.0，原版权声明保留于 [LICENSE](LICENSE) 与各源文件头部）。
++>
++> **本分支已停止维护**。源码与全部变更记录按 GPL-2.0 原样归档，可自由取用与继续开发。
++
++本分支相对原版（4.6.11 / commit `dd80c67`）的全部修改由 **glm-5.3** 完成：将模块从传统 Xposed API（`de.robv.android.xposed`，api-82）整体迁移至 libxposed 新 API（`io.github.libxposed:api:102.0.0`，targetApiVersion=102），并适配 LSPosed 2.x 的现代模块加载路径：
++
++- 版本 4.6.12（versionCode 560，原版 4.6.11 基础 +1）
++- 新式模块声明：`META-INF/xposed/java_init.list` / `module.prop` / `scope.list`，移除 `assets/xposed_init`
++- 新增 Java 兼容层 `com.coderstory.flyme10.xposedcompat`：以拦截器链复刻旧 API 的全部签名（`XC_MethodHook`、`XposedBridge`、`XposedHelpers`、`XSharedPreferences` 等），7 个功能模块因此只改了 import 行
++- 移除方向错误的"未在框架中激活"自检（新 API 严格按 scope.list 注入、不注入模块自身 App 进程，该检测在新路径下必然误报）
++- 配置读取通道重写（三级回退）：框架 `getRemotePreferences` → App 端导出的 `PreferencesProvider` 实时拉取（加载期经 ActivityThread 系统上下文）→ 文件直读；卸载重装、改配置不再失效
++- 内嵌模拟资源替换（拦截 `Resources.getString/getText`，思路参考 EzHookTool / HyperCeiler 的 ResourcesTool）：电量百分比等字符串替换不再依赖已被 LSPosed 移除的旧版 XResources 桥；电量开关为"查询时判定"，切换即时生效
++
++归档文档：
++
++- 修改说明与迭代记录：[docs/CHANGES-libxposed102.md](docs/CHANGES-libxposed102.md)
++- 完整变更补丁：[docs/libxposed102-migration.patch](docs/libxposed102-migration.patch)
++- 源码分析报告（逆向分析 + 迁移全程）：[docs/源码分析报告.md](docs/源码分析报告.md)
++
++---
++
++以下为原版说明：
++
+ # Flyme10助手
+ 
+ > Flyme10助手是基于Xposed开发的Flyme系统MOD工具
 diff --git a/app/build.gradle b/app/build.gradle
 index 950edc9..48b76e3 100644
 --- a/app/build.gradle
@@ -42,6 +75,19 @@ index 1681048..5a3f521 100644
 +# 跨进程配置通道：宿主进程通过 ContentResolver.call("getAll") 调用导出的 provider
 +-keep class com.coderstory.flyme10.PreferencesProvider { *; }
 +-keep class com.coderstory.flyme10.preferences.PreferencesProvider { *; }
+diff --git a/app/src/main/AndroidManifest.xml b/app/src/main/AndroidManifest.xml
+index b9d8a39..cb098bd 100644
+--- a/app/src/main/AndroidManifest.xml
++++ b/app/src/main/AndroidManifest.xml
+@@ -65,6 +65,7 @@
+         <provider
+             android:name=".PreferencesProvider"
+             android:authorities="com.coderstory.flyme10.PreferencesProvider"
++            android:directBootAware="true"
+             android:exported="true" />
+     </application>
+ </manifest>
+\ No newline at end of file
 diff --git a/app/src/main/assets/xposed_init b/app/src/main/assets/xposed_init
 deleted file mode 100644
 index f54427a..0000000
@@ -104,6 +150,31 @@ index ba5033c..1a127d8 100644
      }
  
      //init the default checked fragment
+diff --git a/app/src/main/java/com/coderstory/flyme10/fragment/OthersFragment.kt b/app/src/main/java/com/coderstory/flyme10/fragment/OthersFragment.kt
+index 8f71457..621c00e 100644
+--- a/app/src/main/java/com/coderstory/flyme10/fragment/OthersFragment.kt
++++ b/app/src/main/java/com/coderstory/flyme10/fragment/OthersFragment.kt
+@@ -52,10 +52,7 @@ class OthersFragment : BaseFragment() {
+             editor.putBoolean("EnableBlockAD", (v as SwitchCompat).isChecked)
+             fix()
+         }
+-        `$`<View>(R.id.enabletheme).setOnClickListener { v: View ->
+-            editor.putBoolean("enabletheme", (v as SwitchCompat).isChecked)
+-            fix()
+-        }
++        // v6：主题无限试用已移除（与 FlymeTool 等主题 hook 冲突，且试用服务的 hook 目标在新 ROM 上不稳定）
+         `$`<View>(R.id.hide_icon_label).setOnClickListener { v: View ->
+             editor.putBoolean("hide_icon_label", (v as SwitchCompat).isChecked)
+             fix()
+@@ -135,8 +132,6 @@ class OthersFragment : BaseFragment() {
+             prefs.getBoolean("hide_icon_label", false)
+         (`$`<View>(R.id.enableBlockAD) as SwitchCompat).isChecked =
+             prefs.getBoolean("EnableBlockAD", false)
+-        (`$`<View>(R.id.enabletheme) as SwitchCompat).isChecked =
+-            prefs.getBoolean("enabletheme", false)
+         (`$`<View>(R.id.enableCheckInstaller) as SwitchCompat).isChecked =
+             prefs.getBoolean("enableCheckInstaller", false)
+         (`$`<View>(R.id.enableCTS) as SwitchCompat).isChecked = prefs.getBoolean("enableCTS", false)
 diff --git a/app/src/main/java/com/coderstory/flyme10/patchModule/FuckAd.kt b/app/src/main/java/com/coderstory/flyme10/patchModule/FuckAd.kt
 index e3c39dd..9b2cb58 100644
 --- a/app/src/main/java/com/coderstory/flyme10/patchModule/FuckAd.kt
@@ -273,28 +344,337 @@ index 384a246..3d8ecbd 100644
      }
  
 diff --git a/app/src/main/java/com/coderstory/flyme10/patchModule/ThemePatcher.kt b/app/src/main/java/com/coderstory/flyme10/patchModule/ThemePatcher.kt
-index 08973f6..715ce05 100644
+deleted file mode 100644
+index 08973f6..0000000
 --- a/app/src/main/java/com/coderstory/flyme10/patchModule/ThemePatcher.kt
-+++ b/app/src/main/java/com/coderstory/flyme10/patchModule/ThemePatcher.kt
-@@ -5,12 +5,12 @@ import android.content.*
- import android.net.Uri
- import com.coderstory.flyme10.tools.XposedHelper
- import com.coderstory.flyme10.xposed.IModule
++++ /dev/null
+@@ -1,325 +0,0 @@
+-package com.coderstory.flyme10.patchModule
+-
+-
+-import android.content.*
+-import android.net.Uri
+-import com.coderstory.flyme10.tools.XposedHelper
+-import com.coderstory.flyme10.xposed.IModule
 -import de.robv.android.xposed.IXposedHookZygoteInit.StartupParam
 -import de.robv.android.xposed.XC_MethodHook
 -import de.robv.android.xposed.XC_MethodReplacement
 -import de.robv.android.xposed.XposedBridge
 -import de.robv.android.xposed.callbacks.XC_InitPackageResources.InitPackageResourcesParam
 -import de.robv.android.xposed.callbacks.XC_LoadPackage.LoadPackageParam
-+import com.coderstory.flyme10.xposedcompat.InitPackageResourcesParam
-+import com.coderstory.flyme10.xposedcompat.LoadPackageParam
-+import com.coderstory.flyme10.xposedcompat.StartupParam
-+import com.coderstory.flyme10.xposedcompat.XC_MethodHook
-+import com.coderstory.flyme10.xposedcompat.XC_MethodReplacement
-+import com.coderstory.flyme10.xposedcompat.XposedBridge
- 
- 
- class ThemePatcher : XposedHelper(), IModule {
+-
+-
+-class ThemePatcher : XposedHelper(), IModule {
+-    override fun handleInitPackageResources(respray: InitPackageResourcesParam) {
+-        if (respray.packageName == "com.meizu.customizecenter" && prefs.getBoolean(
+-                "enabletheme",
+-                false
+-            )
+-        ) {
+-            if (respray.packageName == "com.meizu.customizecenter") {
+-                respray.res.setReplacement(0x7f110338, "开始白嫖")
+-                respray.res.setReplacement(0x7f11033f, "开始白嫖")
+-                respray.res.setReplacement(0x7f110345, "正在白嫖")
+-             }
+-        }
+-    }
+-    override fun handleLoadPackage(param: LoadPackageParam) {
+-
+-        // 主题和谐
+-        if (param.packageName == "com.meizu.customizecenter" && prefs.getBoolean(
+-                "enabletheme",
+-                false
+-            )
+-        ) {
+-            if (param.packageName == "com.meizu.customizecenter") {
+-                XposedBridge.log("开始hook主题")
+-                // 开始试用主题
+-                findAndHookMethod(
+-                    "com.meizu.customizecenter.manager.managermoduls.theme.f",
+-                    param.classLoader,
+-                    "N",
+-                    String::class.java,
+-                    String::class.java,
+-                    Int::class.javaPrimitiveType,
+-                    Int::class.javaPrimitiveType,
+-                    XC_MethodReplacement.returnConstant(null)
+-                )
+-                findAndHookMethod(
+-                    "com.meizu.customizecenter.manager.managermoduls.theme.f",
+-                    param.classLoader,
+-                    "k",
+-                    Boolean::class.java,
+-                    String::class.java,
+-                    Int::class.javaPrimitiveType,
+-                    Int::class.javaPrimitiveType,
+-                    XC_MethodReplacement.returnConstant(null)
+-                )
+-
+-
+-                // 拦截开机自启广播
+-                findAndHookMethod(
+-                    "com.meizu.customizecenter.admin.receiver.BootBroadcastReceiver",
+-                    param.classLoader,
+-                    "onReceive",
+-                    Context::class.java,
+-                    Intent::class.java,
+-                    XC_MethodReplacement.returnConstant(null)
+-                )
+-
+-                // 拦截试用服务
+-                findAndHookMethod(
+-                    "com.meizu.customizecenter.manager.managermoduls.font.FontTrialService",
+-                    param.classLoader,
+-                    "onStartCommand",
+-                    Intent::class.java,
+-                    Int::class.javaPrimitiveType,
+-                    Int::class.javaPrimitiveType,
+-                    XC_MethodReplacement.returnConstant(2)
+-                )
+-                findAndHookMethod(
+-                    "com.meizu.customizecenter.manager.managermoduls.theme.ThemeTrialService",
+-                    param.classLoader,
+-                    "onStartCommand",
+-                    Intent::class.java,
+-                    Int::class.javaPrimitiveType,
+-                    Int::class.javaPrimitiveType,
+-                    object : XC_MethodReplacement() {
+-                        @Throws(Throwable::class)
+-                        override fun replaceHookedMethod(param: MethodHookParam): Any {
+-                            return 2
+-                        }
+-                    })
+-
+-                //resetToSystemTheme
+-                // findAndHookMethod("com.meizu.customizecenter.manager.managermoduls.theme.common.b", lpparam.classLoader, "c", XC_MethodReplacement.returnConstant(true))
+-                // 10.1.x
+-                if (findClassWithoutLog(
+-                        "com.meizu.flyme.policy.sdk.ve0",
+-                        param.classLoader
+-                    ) != null
+-                ) {
+-                    findAndHookMethod(
+-                        "com.meizu.flyme.policy.sdk.ve0",
+-                        param.classLoader,
+-                        "J",
+-                        XC_MethodReplacement.returnConstant(true)
+-                    )
+-                }
+-                // 10.2.2
+-                findAndHookMethod(
+-                    "com.meizu.flyme.policy.sdk.pe0",
+-                    param.classLoader,
+-                    "J",
+-                    XC_MethodReplacement.returnConstant(true)
+-                )
+-
+-                // 10.3.71
+-                findAndHookMethod(
+-                    "com.meizu.flyme.policy.sdk.jf0",
+-                    param.classLoader,
+-                    "L",
+-                    XC_MethodReplacement.returnConstant(true)
+-                )
+-
+-                // 11.1.21
+-                findAndHookMethod("ld.d", param.classLoader, "K", XC_MethodReplacement.returnConstant(true))
+-
+-                findAndHookMethod(
+-                    "com.meizu.customizecenter.manager.utilshelper.restorehelper.ThemeRestoreService\$a", param.classLoader, "c", Int::class.javaPrimitiveType,
+-                    XC_MethodReplacement.returnConstant(null)
+-                )
+-
+-                findAndHookMethod(
+-                    "com.meizu.customizecenter.manager.managermoduls.theme.e", param.classLoader, "t",
+-                    Context::class.java,
+-                    String::class.java,
+-                    Long::class.javaPrimitiveType, XC_MethodReplacement.returnConstant(null)
+-                )
+-
+-
+-                /**
+-                 *
+-                 * public void a(boolean arg4, boolean arg5) {
+-                 * com.meizu.customizecenter.manager.utilstool.c.b.b(this.b, "startFontRestoreService");
+-                 * Intent v0 = new Intent(this.d, FontRestoreService.class);
+-                 * v0.putExtra(com.meizu.customizecenter.model.a.a$g.h.a(), this.e().a());
+-                 * v0.putExtra("is_go_to_pay_font", arg5);
+-                 * v0.putExtra("is_restore_last_key", arg4);
+-                 * com.meizu.customizecenter.manager.utilstool.systemutills.a.a.a(this.d, v0);
+-                 * }
+-                 */
+-                // 7.5
+-                findAndHookMethod(
+-                    "com.meizu.customizecenter.manager.managermoduls.font.k",
+-                    param.classLoader,
+-                    "Y",
+-                    Boolean::class.javaPrimitiveType,
+-                    Boolean::class.javaPrimitiveType,
+-                    XC_MethodReplacement.returnConstant(null)
+-                )
+-
+-                findAndHookMethod(
+-                    "com.meizu.customizecenter.manager.managermoduls.theme.e",
+-                    param.classLoader,
+-                    "j0",
+-                    Boolean::class.javaPrimitiveType,
+-                    Boolean::class.javaPrimitiveType,
+-                    XC_MethodReplacement.returnConstant(null)
+-                )
+-
+-                findAndHookMethod(
+-                    "gd.k",
+-                    param.classLoader,
+-                    "Y",
+-                    Boolean::class.javaPrimitiveType,
+-                    Boolean::class.javaPrimitiveType,
+-                    XC_MethodReplacement.returnConstant(null)
+-                )
+-
+-
+-                /**
+-                 * public void k() {
+-                 * long v0 = SystemClock.elapsedRealtime() - this.n();
+-                 * com.meizu.customizecenter.manager.utilstool.c.b.e(this.b, "checkTrialFontWhenAppStart_interval:" + v0 / 1000 + " second");
+-                 * if(!this.f(v0)) {
+-                 * this.g();
+-                 * }
+-                 * }
+-                 */
+-                findAndHookMethod(
+-                    "com.meizu.customizecenter.manager.managermoduls.font.k",
+-                    param.classLoader,
+-                    "m",
+-                    XC_MethodReplacement.returnConstant(null)
+-                )
+-
+-                findAndHookMethod(
+-                    "gd.k",
+-                    param.classLoader,
+-                    "m",
+-                    XC_MethodReplacement.returnConstant(null)
+-                )
+-
+-
+-                //"checkTrialFont:!isUsingTrialFont() Context context, String str, long j
+-                findAndHookMethod(
+-                    "com.meizu.customizecenter.manager.managermoduls.font.k",
+-                    param.classLoader,
+-                    "l",
+-                    Context::class.java,
+-                    String::class.java,
+-                    Long::class.javaPrimitiveType,
+-                    XC_MethodReplacement.returnConstant(null)
+-                )
+-
+-                findAndHookMethod(
+-                    "gd.k",
+-                    param.classLoader,
+-                    "l",
+-                    Context::class.java,
+-                    String::class.java,
+-                    Long::class.javaPrimitiveType,
+-                    XC_MethodReplacement.returnConstant(null)
+-                )
+-
+-                //   fi0.e(str, "checkTrialThemeWhenAppStart_interval:" + (elapsedRealtime / 1000) + " second");
+-                // 重启恢复主题 10.3.71
+-                findAndHookMethod(
+-                    "com.meizu.customizecenter.admin.application.CustomizeCenterApplicationInit",
+-                    param.classLoader,
+-                    "S",
+-                    XC_MethodReplacement.returnConstant(null)
+-                )
+-                // 11.1.21
+-                findAndHookMethod(
+-                    "com.meizu.customizecenter.admin.application.CustomizeCenterApplicationInit",
+-                    param.classLoader,
+-                    "T",
+-                    XC_MethodReplacement.returnConstant(null)
+-                )
+-
+-                val themeContentProvider: Class<*> = findClass(
+-                    "com.meizu.customizecenter.manager.utilshelper.dbhelper.dao.ThemeContentProvider",
+-                    param.classLoader
+-                )
+-                //主题混搭 ThemeContentProvider query Unknown URI
+-                findAndHookMethod(
+-                    themeContentProvider,
+-                    "query",
+-                    Uri::class.java,
+-                    Array<String>::class.java,
+-                    String::class.java,
+-                    Array<String>::class.java,
+-                    String::class.java,
+-                    object : XC_MethodHook() {
+-                        @Throws(Throwable::class)
+-                        override fun beforeHookedMethod(param: MethodHookParam) {
+-                            val objs = param.args
+-                            val tag = "(ITEMS LIKE"
+-                            val tag2 = "%zklockscreen;%"
+-                            val tag3 = "%com.meizu.flyme.weather;%"
+-                            var result = false
+-                            for (obj in objs) {
+-                                if (obj is String && (obj.contains(tag) || obj == tag2 || obj == tag3)) {
+-                                    result = true
+-                                }
+-                            }
+-                            if (result) {
+-                                for (obj in objs) {
+-                                    if (obj is Array<*>) { // obj is String[]
+-                                        for (j in (obj as Array<String>).indices) {
+-                                            if (obj[j].contains("/storage/emulated/0/Customize/Themes")) {
+-                                                obj[j] = "/storage/emulated/0/Customize%"
+-                                            } else if (obj[j].contains("/storage/emulated/0/Customize/TrialThemes")) {
+-                                                obj[j] = "NONE"
+-                                            }
+-                                        }
+-                                    }
+-                                }
+-                            }
+-                            super.beforeHookedMethod(param)
+-                        }
+-                    })
+-
+-                // android 11 8.30.2
+-                findAndHookMethod(
+-                    "com.meizu.customizecenter.manager.utilshelper.restorehelper.ThemeRestoreService",
+-                    param.classLoader,
+-                    "onStartCommand",
+-                    Intent::class.java,
+-                    Int::class.javaPrimitiveType,
+-                    Int::class.javaPrimitiveType,
+-                    XC_MethodReplacement.returnConstant(0)
+-                )
+-                findAndHookMethod(
+-                    "com.meizu.customizecenter.manager.utilshelper.restorehelper.FontRestoreService",
+-                    param.classLoader,
+-                    "onStartCommand",
+-                    Intent::class.java,
+-                    Int::class.javaPrimitiveType,
+-                    Int::class.javaPrimitiveType,
+-                    XC_MethodReplacement.returnConstant(0)
+-                )
+-                findAndHookMethod(
+-                    "com.meizu.customizecenter.manager.utilshelper.scannerhelper.CustomizeScannerService",
+-                    param.classLoader,
+-                    "onStartCommand",
+-                    Intent::class.java,
+-                    Int::class.javaPrimitiveType,
+-                    Int::class.javaPrimitiveType,
+-                    XC_MethodReplacement.returnConstant(0)
+-                )
+-            }
+-        }
+-    }
+-
+-    override fun initZygote(startupParam: StartupParam?) {
+-        TODO("Not yet implemented")
+-    }
+-
+-
+-}
+\ No newline at end of file
 diff --git a/app/src/main/java/com/coderstory/flyme10/preferences/PreferencesProvider.kt b/app/src/main/java/com/coderstory/flyme10/preferences/PreferencesProvider.kt
 index 33849e2..728fbda 100644
 --- a/app/src/main/java/com/coderstory/flyme10/preferences/PreferencesProvider.kt
@@ -349,6 +729,67 @@ index 33849e2..728fbda 100644
  
          /**
           * 表列名
+diff --git a/app/src/main/java/com/coderstory/flyme10/tools/Application.kt b/app/src/main/java/com/coderstory/flyme10/tools/Application.kt
+index 86865ef..9f30db2 100644
+--- a/app/src/main/java/com/coderstory/flyme10/tools/Application.kt
++++ b/app/src/main/java/com/coderstory/flyme10/tools/Application.kt
+@@ -1,13 +1,20 @@
+ package com.coderstory.flyme10.tools
+ 
+ import android.app.Application
++import com.coderstory.flyme10.tools.Misc.SharedPreferencesName
+ import com.umeng.commonsdk.UMConfigure
+ 
+ class Application : Application() {
+     override fun onCreate() {
+         super.onCreate()
++        if (applicationContext.isDeviceProtectedStorage) {
++            // Direct Boot（解锁前）模式：仅因 directBootAware 的 PreferencesProvider 被拉起，
++            // 不初始化友盟等业务组件，保证解锁前 provider 稳定可用
++            return
++        }
++        migrateLegacyPrefs()
+         UMConfigure.setLogEnabled(true)
+-        UMConfigure.preInit(applicationContext, "5ee5d80f978eea081640e210", "weibo")
++        UMConfigure.preInit(applicationContext, "5ee5d80f978ea081640e210", "weibo")
+         UMConfigure.init(
+             this,
+             "5ee5d80f978eea081640e210",
+@@ -16,4 +23,33 @@ class Application : Application() {
+             ""
+         )
+     }
++
++    /**
++     * v6 起配置统一存放在设备加密存储（DE）。把旧版本写在 CE 的配置一次性搬到 DE：
++     * 仅在 DE 为空且 CE 有值时执行，不会回滚用户较新的 DE 配置。
++     */
++    private fun migrateLegacyPrefs() {
++        try {
++            val de = applicationContext
++                .createDeviceProtectedStorageContext()
++                .getSharedPreferences(SharedPreferencesName, MODE_PRIVATE)
++            if (de.all.isEmpty()) {
++                val ce = getSharedPreferences(SharedPreferencesName, MODE_PRIVATE)
++                if (ce.all.isNotEmpty()) {
++                    val editor = de.edit()
++                    for ((key, value) in ce.all) {
++                        when (value) {
++                            is String -> editor.putString(key, value)
++                            is Boolean -> editor.putBoolean(key, value)
++                            is Int -> editor.putInt(key, value)
++                            is Long -> editor.putLong(key, value)
++                            is Float -> editor.putFloat(key, value)
++                        }
++                    }
++                    editor.commit()
++                }
++            }
++        } catch (ignored: Exception) {
++        }
++    }
+ }
+\ No newline at end of file
 diff --git a/app/src/main/java/com/coderstory/flyme10/tools/KotlinXposedHelper.kt b/app/src/main/java/com/coderstory/flyme10/tools/KotlinXposedHelper.kt
 index a3bf22d..8c5f303 100644
 --- a/app/src/main/java/com/coderstory/flyme10/tools/KotlinXposedHelper.kt
@@ -830,6 +1271,29 @@ index 25e14ee..a5b5424 100644
  import android.util.Log as ALog
  
  object Log {
+diff --git a/app/src/main/java/com/coderstory/flyme10/tools/Utils.kt b/app/src/main/java/com/coderstory/flyme10/tools/Utils.kt
+index 5626fda..c654ef5 100644
+--- a/app/src/main/java/com/coderstory/flyme10/tools/Utils.kt
++++ b/app/src/main/java/com/coderstory/flyme10/tools/Utils.kt
+@@ -15,11 +15,16 @@ class Utils {
+             context: Context?,
+             fileName: String?
+         ): SharedPreferences {
++            // v6：统一改用设备加密存储（DE，/data/user_de）。CE 存储在重启后首次解锁前不可读，
++            // 是"开机后第一次解锁 hook 全不生效"的根源；DE 在 Direct Boot 阶段即可被
++            // directBootAware 的 PreferencesProvider 读取。App 端所有读写均经由此函数，
++            // 改这一处即完成全量切换（旧 CE 配置由 Application 启动时一次性迁移）。
++            val de = context!!.createDeviceProtectedStorageContext()
+             var result: SharedPreferences
+             try {
+-                result = context!!.getSharedPreferences(fileName, Context.MODE_WORLD_READABLE)
++                result = de.getSharedPreferences(fileName, Context.MODE_WORLD_READABLE)
+             } catch (exp: Exception) {
+-                result = context!!.getSharedPreferences(fileName, Context.MODE_PRIVATE)
++                result = de.getSharedPreferences(fileName, Context.MODE_PRIVATE)
+             }
+             return result
+         }
 diff --git a/app/src/main/java/com/coderstory/flyme10/tools/XposedHelper.kt b/app/src/main/java/com/coderstory/flyme10/tools/XposedHelper.kt
 index c53e3b7..3bacc9e 100644
 --- a/app/src/main/java/com/coderstory/flyme10/tools/XposedHelper.kt
@@ -873,10 +1337,10 @@ index 61e6750..7d6af5e 100644
 \ No newline at end of file
 +}
 diff --git a/app/src/main/java/com/coderstory/flyme10/xposed/Start.kt b/app/src/main/java/com/coderstory/flyme10/xposed/Start.kt
-index 7c84daf..9e8e4c8 100644
+index 7c84daf..2eb019d 100644
 --- a/app/src/main/java/com/coderstory/flyme10/xposed/Start.kt
 +++ b/app/src/main/java/com/coderstory/flyme10/xposed/Start.kt
-@@ -1,39 +1,60 @@
+@@ -1,39 +1,58 @@
  package com.coderstory.flyme10.xposed
  
 +import com.coderstory.flyme10.BuildConfig
@@ -886,7 +1350,7 @@ index 7c84daf..9e8e4c8 100644
  import com.coderstory.flyme10.patchModule.IsEnable
  import com.coderstory.flyme10.patchModule.Others
  import com.coderstory.flyme10.patchModule.SystemUi
- import com.coderstory.flyme10.patchModule.ThemePatcher
+-import com.coderstory.flyme10.patchModule.ThemePatcher
 -import com.coderstory.flyme10.tools.XposedHelper
 -import de.robv.android.xposed.IXposedHookInitPackageResources
 -import de.robv.android.xposed.IXposedHookLoadPackage
@@ -920,10 +1384,11 @@ index 7c84daf..9e8e4c8 100644
 +    override fun onModuleLoaded(param: ModuleLoadedParam) {
 +        XposedApi.api = this
 +        XposedBridge.log("Flyme助手已加载（libxposed API $apiVersion，框架 $frameworkName $frameworkVersion）")
-+        // 诊断：配置读取来源与数量（远程服务 = 框架 getRemotePreferences，文件 = 直读降级）
++        // 诊断：逐通道读取计数（provider = App 端导出的 PreferencesProvider（DE 存储），
++        // 远程 = 框架 getRemotePreferences，文件 = 直读降级；-1 表示通道异常）
 +        val probe = XSharedPreferences(BuildConfig.APPLICATION_ID, "UserSettings")
 +        XposedBridge.log(
-+            "偏好读取: ${probe.all.size} 项配置（远程服务=${probe.isRemote}）"
++            "偏好读取: ${probe.all.size} 项配置（${probe.channelReport()}）"
 +        )
 +        // The modern API has no resource callbacks; install the deferred replacement hook.
 +        ResourceCompat.install()
@@ -935,7 +1400,7 @@ index 7c84daf..9e8e4c8 100644
          IsEnable().handleLoadPackage(lpparam)
          HideApp().handleLoadPackage(lpparam)
          Others().handleLoadPackage(lpparam)
-         ThemePatcher().handleLoadPackage(lpparam)
+-        ThemePatcher().handleLoadPackage(lpparam)
          FuckAd().handleLoadPackage(lpparam)
          SystemUi().handleLoadPackage(lpparam)
 -    }
@@ -953,7 +1418,6 @@ index 7c84daf..9e8e4c8 100644
 +        }
 +        Others().handleInitPackageResources(resparam)
 +        SystemUi().handleInitPackageResources(resparam)
-+        ThemePatcher().handleInitPackageResources(resparam)
      }
 -}
 \ No newline at end of file
@@ -1716,10 +2180,10 @@ index 0000000..92df3de
 +}
 diff --git a/app/src/main/java/com/coderstory/flyme10/xposedcompat/XSharedPreferences.java b/app/src/main/java/com/coderstory/flyme10/xposedcompat/XSharedPreferences.java
 new file mode 100644
-index 0000000..088e4e5
+index 0000000..66c56eb
 --- /dev/null
 +++ b/app/src/main/java/com/coderstory/flyme10/xposedcompat/XSharedPreferences.java
-@@ -0,0 +1,326 @@
+@@ -0,0 +1,360 @@
 +package com.coderstory.flyme10.xposedcompat;
 +
 +import android.net.Uri;
@@ -1971,6 +2435,13 @@ index 0000000..088e4e5
 +    }
 +
 +    public Map<String, Object> getAll() {
++        // 1) App 端导出的 PreferencesProvider：跨进程读取 App 实时配置文件。
++        //    v6 起为 DE 存储 + directBootAware，重启后首次解锁前（Direct Boot）即可使用。
++        Map<String, Object> fromProvider = providerGetAll(groupName);
++        if (fromProvider != null && !fromProvider.isEmpty()) {
++            return new HashMap<>(fromProvider);
++        }
++        // 2) 框架远程偏好服务（getRemotePreferences）
 +        ensureRemote();
 +        Map<String, Object> out = null;
 +        if (remote != null) {
@@ -1979,26 +2450,53 @@ index 0000000..088e4e5
 +                for (Map.Entry<String, ?> e : remote.getAll().entrySet()) {
 +                    out.put(e.getKey(), e.getValue());
 +                }
-+                // The remote service can return an empty snapshot right after process
-+                // start (or before the app side has ever written anything). Only trust it
-+                // when non-empty, otherwise fall back to the provider/file below.
 +                if (!out.isEmpty()) {
 +                    return out;
 +                }
 +            } catch (Throwable ignored) {
 +                out = null;
-+                // fall back to the provider / file for this call
++                // fall back to the file for this call
 +            }
 +        }
-+        Map<String, Object> fromProvider = providerGetAll(groupName);
-+        if (fromProvider != null && !fromProvider.isEmpty()) {
-+            return new HashMap<>(fromProvider);
-+        }
++        // 3) 文件直读降级
 +        reload();
 +        if (!values.isEmpty()) {
 +            return new HashMap<>(values);
 +        }
 +        return out != null ? out : new HashMap<String, Object>();
++    }
++
++    /**
++     * Diagnostic helper for the module load probe: per-channel item counts.
++     * "-1" marks a channel that threw (unavailable), "0" an empty response.
++     */
++    public String channelReport() {
++        ensureRemote();
++        int r;
++        if (remote != null) {
++            try {
++                r = remote.getAll().size();
++            } catch (Throwable t) {
++                r = -1;
++            }
++        } else {
++            r = -1;
++        }
++        int p;
++        try {
++            Map<String, Object> m = providerGetAll(groupName);
++            p = m == null ? -1 : m.size();
++        } catch (Throwable t) {
++            p = -1;
++        }
++        int f;
++        try {
++            reload();
++            f = values.size();
++        } catch (Throwable t) {
++            f = -1;
++        }
++        return "provider=" + p + " 远程=" + r + " 文件=" + f;
 +    }
 +
 +    public boolean getBoolean(String key, boolean defValue) {
@@ -2505,6 +3003,39 @@ index 0000000..84f1b6f
 +        return Modifier.isStatic(m.getModifiers());
 +    }
 +}
+diff --git a/app/src/main/res/layout/fragment_others.xml b/app/src/main/res/layout/fragment_others.xml
+index 0e52bbd..c55afe7 100644
+--- a/app/src/main/res/layout/fragment_others.xml
++++ b/app/src/main/res/layout/fragment_others.xml
+@@ -107,16 +107,6 @@
+                 android:text="@string/disableSearch"
+                 />
+ 
+-            <androidx.appcompat.widget.SwitchCompat
+-                android:id="@+id/enabletheme"
+-                android:layout_width="match_parent"
+-                android:layout_height="100dp"
+-                android:layout_marginTop="4dp"
+-                android:background="@color/switchBtn"
+-                android:paddingStart="30dp"
+-                android:paddingEnd="30dp"
+-                android:text="@string/fucktheme" />
+-
+             <androidx.appcompat.widget.SwitchCompat
+                 android:id="@+id/hide_icon_label"
+                 android:layout_width="match_parent"
+diff --git a/app/src/main/res/values/strings.xml b/app/src/main/res/values/strings.xml
+index 59de7c6..0cf4a2e 100644
+--- a/app/src/main/res/values/strings.xml
++++ b/app/src/main/res/values/strings.xml
+@@ -23,7 +23,6 @@
+     <string name="click_to_clock"><b>下拉栏时间</b>\n点击下拉栏时间快捷打开时钟</string>
+     <string name="click_to_calendar"><b>下拉栏日历</b>\n点击下拉栏日期快捷打开日历</string>
+     <string name="hideDepWarn"><b>隐藏开发者选项风险警告</b>\n禁止开启开发者选项后通知栏弹出的风险警告</string>
+-    <string name="fucktheme"><b>主题和谐</b>\n无限制试用主题,不会有倒计时之类的提示.也不会还原成默认主题。</string>
+     <string name="alarem"><b>闹钟</b>\n启用闹钟后,隐藏状态栏上的闹钟图标</string>
+     <string name="hide_icon_debug"><b>USB调试</b>\n隐藏链接电脑后的USB调试图标</string>
+     <string name="hide_icon_save"><b>流量监控</b>\n在手机管家中开启流量监控后，隐藏状态栏中对应的水滴图标,偶尔会隐藏失效,重启即可。</string>
 diff --git a/app/src/main/resources/META-INF/xposed/java_init.list b/app/src/main/resources/META-INF/xposed/java_init.list
 new file mode 100644
 index 0000000..f57fb4b
@@ -2538,3 +3069,280 @@ index 0000000..8bcbc1d
 +com.hy.weather.mz
 +com.android.browser
 +com.meizu.flyme.weather
+diff --git a/docs/CHANGES-libxposed102.md b/docs/CHANGES-libxposed102.md
+new file mode 100644
+index 0000000..109c0d6
+--- /dev/null
++++ b/docs/CHANGES-libxposed102.md
+@@ -0,0 +1,79 @@
++# libxposed API 102 迁移记录（4.6.11 → 4.6.12）
++
++> 本文档记录 glm-5.3 完成的全部修改。基础版本：上游 dev 分支 commit `dd80c67`（版本 4.6.11 / versionCode 559）。
++> 完整机器可读补丁见同目录 [libxposed102-migration.patch](libxposed102-migration.patch)，逐文件 diff 与验证细节见 [源码分析报告.md](源码分析报告.md)。
++
++## 一、版本与声明方式
++
++| 项 | 原版（4.6.11） | 本分支（4.6.12） |
++|---|---|---|
++| versionCode / versionName | 559 / 4.6.11 | 560 / 4.6.12 |
++| Xposed API | `de.robv.android.xposed`（api-82 jar，`compileOnly fileTree`） | `io.github.libxposed:api:102.0.0`（Maven Central AAR） |
++| 模块入口声明 | `assets/xposed_init` | `META-INF/xposed/java_init.list`（+ `module.prop`、`scope.list`） |
++| 入口类 | `Start : IXposedHookLoadPackage` | `Start : XposedModule()` |
++| minApiVersion / targetApiVersion | —（xposedminversion=54） | 101 / 102 |
++
++`module.prop`：`minApiVersion=101`、`targetApiVersion=102`、`exceptionMode=protective`、`staticScope=true`。`scope.list` 与原 `@array/scope` 一致。`AndroidManifest.xml` 未动（LSPosed 仍读取 MODULE_SETTINGS category 定位设置页）。
++
++## 二、兼容层（`com.coderstory.flyme10.xposedcompat`，13 个 Java 文件）
++
++用 Java 复刻旧 API 的全部签名，内部全部映射到新 API，使 7 个功能模块（IsEnable/HideApp/Others/ThemePatcher/FuckAd/SystemUi/Start）只改 import：
++
++- `XC_MethodHook` / `XC_MethodReplacement` / `MethodHookParam`：before/proceed/after 语义与旧框架一致（before 中 setResult/setThrowable 跳过原方法、after 必执行、参数修改透传）；基础类必须是 Java——`Others.kt` 的无返回类型 `replaceHookedMethod` 覆写依赖 Java 基类。
++- `HookerImpl`（`XposedInterface.Hooker`）：把旧回调模型桥接到 `hook(Executable).intercept(...)` 拦截器链；回调异常捕获记日志，module.prop 同时声明 protective 兜底。
++- `XposedBridge` / `XposedHelpers`：`findAndHookMethod`、`hookAllMethods`（含父类，顺带修复旧版 hook 不到继承方法的边角）、`hookAllConstructors`、`getObjectField/setObjectField/callMethod` 等反射工具。
++- `LoadPackageParam` / `InitPackageResourcesParam` / `StartupParam` / `AndroidAppHelper`（`anyContext()` 额外提供 ActivityThread 系统上下文，供加载期取 ContentResolver）。
++
++## 三、配置读取通道（三级回退，按真机日志迭代 5 版）
++
++| 版本 | 方案 | 真机结果 |
++|---|---|---|
++| v1/v2 | 兼容层直接解析 `shared_prefs/UserSettings.xml` | 失败——现代加载路径不放开文件权限（0600/SELinux），所有开关读成 false |
++| v3 | `getRemotePreferences("UserSettings")` 优先 | 通道连通，但 LSPosed 2.2.1 从未送达数据（供给依赖注入模块自身 App 进程或 App 侧集成 service 库，现代路径两者皆无） |
++| v4 | 远程快照为空时合并文件直读 | 同样为空 |
++| v5 | 远程为空 → 查询 App 端导出的 `PreferencesProvider`（`call("getAll")`，进程级 1 秒 TTL 缓存）→ 文件直读 | 通道打通：`flyme.update`（uid 1000）能拿到全部 13 项配置；但 systemui 等普通 uid 进程全部为 0 |
++| **v6（最终）** | **存储整体切换到设备加密存储（DE）+ provider 标记 `directBootAware`** | 解决"安装后 App 处于 stopped 状态导致普通 uid 进程连不上 provider"与"重启后首次解锁前配置不可读"两个根因 |
++
++v5 真机日志（2026-10-19 07:03）判定依据：`com.meizu.flyme.update`（uid 1000，系统进程豁免 stopped 限制）在进程启动后 19ms 内经 provider 拿到 13 项配置；同秒重启的 systemui/launcher（普通 uid）全部为 0——说明 provider 通道本身可用，但普通 App 进程在 App 处于 stopped 状态（每次安装/升级后、且未重新打开过 App）时会被 AMS 拦截。**因此：每次安装/升级后必须打开一次 App。**
++
++v6 改动：
++1. `Utils.getMySharedPreferences` 改为经 `createDeviceProtectedStorageContext()` 访问 DE 存储（App 端全部配置读写均经此函数，一处切换全量生效）；
++2. `PreferencesProvider` 标记 `android:directBootAware="true"`，App 的 `Application` 在 Direct Boot 模式下跳过友盟初始化——重启后首次解锁前 systemui 等进程即可读到配置；
++3. `Application` 启动时把旧版写在 CE 的配置一次性迁移到 DE（仅 DE 为空时执行，不会回滚）；
++4. 兼容层 `getAll()` 改为 **provider 优先**（远程服务在 LSPosed 2.2.1 上从未送达过数据），并新增 `channelReport()` 通道诊断：探针日志变为 `偏好读取: N 项配置（provider=P 远程=R 文件=F）`，-1 表示通道异常；
++5. **移除"主题无限试用"**（ThemePatcher 模块、设置开关、文案全部删除）：与 FlymeTool 等主题 hook 模块冲突，且其 hook 目标与硬编码资源 ID 在新 ROM 上不稳定；去广告等其余功能保留。
++
++配套：`PreferencesProvider`（原作者预留的导出组件）增加 `call("getAll", spName)` 全量读取接口；`ResourceCompat` 在宿主 `attachBaseContext` 时暂存 Application 供通道使用；proguard 保留两个 Provider 类。
++
++## 四、激活自检移除
++
++`MainActivity.checkEnable()`（弹"检测到插件尚未在框架中激活"）与 `checkDialog()`（`MODE_WORLD_READABLE` 抛异常即弹"插件配置初始化失败"并杀进程）已删除。原设计靠旧框架把模块注入自身 App 进程 hook `isEnable` 自证——新 API 按 scope.list 严格注入，检测必然误报。两条文案在成品 dex/资源中零残留。
++
++## 五、模拟资源替换（reshook emulation）
++
++LSPosed 官方已移除现代 API 的资源 hook（Wiki："Resource hooks are removed"）。参考 EzHookTool（`hook-xposed-101`）/ HyperCeiler ResourcesTool 的技术，内嵌实现：
++
++- 队列中的替换在宿主 `Resources` 就绪时按 `getIdentifier` 解析出资源 ID；
++- 旧 XResources 桥存在则优先走桥，否则 hook `Resources.getString(int)` / `getText(int)` / `getString(int, Object[])` 按 ID 匹配返回替换值；
++- 电量百分比（`status_bar_settings_battery_meter_format_simple` → `%d%%`）为"注册时无条件、查询时判开关"（gateKey），切换即时生效、重启手机不失效；
++- 局限：XML 布局/样式原生解析路径无法拦截（"阿巴阿巴" style 替换跳过并记日志）；ThemePatcher 硬编码 ID 是否命中取决于宿主版本。
++
++## 六、交付产物（同一自签证书 SHA-256 `ed419703…726b`，可互相覆盖安装）
++
++- `Flyme10助手_4.6.12_libxposed102_signed.apk`（v1，含旧激活自检）
++- `Flyme10助手_4.6.12_libxposed102_v2_signed.apk`（移除激活自检）
++- `Flyme10助手_4.6.12_libxposed102_v3_signed.apk`（远程偏好优先）
++- `Flyme10助手_4.6.12_libxposed102_v4_signed.apk`（模拟资源替换）
++- `Flyme10助手_4.6.12_libxposed102_v5_signed.apk`（Provider 实时配置通道）
++- `Flyme10助手_4.6.12_libxposed102_v6_signed.apk`（DE 存储 + directBootAware + 移除主题试用，最终版）
++
++## 七、已知限制与注意事项
++
++- 需要**支持 libxposed 新 API 的框架**（LSPosed 2.x）；旧框架请使用原作者的 4.6.11。
++- 资源替换仅覆盖 Java 代码层取值；样式类替换不支持。
++- 原作者针对旧版 Flyme 硬编码的部分 hook 目标（`StatusBarIconControllerImpl`、`MobileSignalController`、广告类等）在新 ROM 上不存在，会记 `ClassNotFoundException` 日志后跳过——与原版行为一致，非迁移引入。
++- 卸载重装会清空配置，重新配置即可（时钟/电量等查询时判定项即时生效；其余加载期注册项需重启作用域一次）。
++
++## 八、构建
++
++与原版一致：AGP 8.2.1 / Gradle 8.2 / JDK 17 / compileSdk 34 / minSdk 33，`assembleRelease` 产出后自备 keystore 签名。本仓库不含任何签名密钥。
+diff --git "a/docs/\346\272\220\347\240\201\345\210\206\346\236\220\346\212\245\345\221\212.md" "b/docs/\346\272\220\347\240\201\345\210\206\346\236\220\346\212\245\345\221\212.md"
+new file mode 100644
+index 0000000..095ddd0
+--- /dev/null
++++ "b/docs/\346\272\220\347\240\201\345\210\206\346\236\220\346\212\245\345\221\212.md"
+@@ -0,0 +1,186 @@
++# Flyme10助手 (com.coderstory.flyme10) 源码定位与 4.6.11 APK 对比报告
++
++## 一、结论摘要
++
++1. **源码仓库确认**：`https://github.com/coderstory/FlymeHelper`（dev 分支）就是 "Flyme10助手" 的官方源码，GPL v2 授权，作者 CoderStory（GitHub 用户 `coderstory`）。
++2. **公开源码版本 = 4.6.10**（versionCode 558，最后一次提交 2024-01-25 "更新依赖"），比你手里的 **4.6.11** 只落后一个小版本。
++3. **已实际编译成功**：搭好 JDK 17 + Gradle 8.2 + AGP 8.2.1 环境后，源码可完整编译出可安装的 release APK。
++4. **逐字符串对比证明**：编译产物与你的 4.6.11 的 dex 字符串池（18,867 vs 18,868 个）实质差异仅有 8 项，核心代码差异只有 **3 处小改动**。4.6.11 就是公开源码 + 这 3 处改动的产物。
++5. **字节级不可能完全复刻**：作者用私钥签名（未公开），项目也没有配置 reproducible build；但功能逻辑 100% 同源。
++
++## 二、模块身份信息
++
++| 项目 | 内容 |
++|---|---|
++| 包名 | `com.coderstory.flyme10` |
++| Xposed 入口 | `com.coderstory.flyme10.xposed.Start`（assets/xposed_init） |
++| 作者 | CoderStory |
++| 博客 | https://blog.coderstory.cn （已打不开；网页存档：http://web.archive.org/web/20250813032038/https://blog.coderstory.cn/ ） |
++| 微博 | https://weibo.com/codestory |
++| 官方 Xposed 仓库 | https://github.com/Xposed-Modules-Repo/com.coderstory.flyme10 （最后发布 4.6.8） |
++| 源码仓库 | https://github.com/coderstory/FlymeHelper （默认分支 `dev`） |
++| 许可证 | GPL v2 |
++
++## 三、版本关系
++
++| 版本 | versionCode | 状态 |
++|---|---|---|
++| 4.6.8 | 556 | 官方 Xposed 仓库最后公开发布（2023-08-22） |
++| 4.6.9 → 4.6.10 | 557 → 558 | 公开源码 dev 分支 HEAD（"支持主题 10.3.71/11.1.21"、"修复主题重启恢复"、"更新依赖"） |
++| **4.6.11** | 559 | **你手里的 APK**，源码未公开，但经对比仅为 4.6.10 + 3 处小改动 |
++
++其它分支均更旧：`master` = 4.2.2.Final（Flyme9 时代），`next` 停在 2023-08-25，另有 flyme6/7/8/9-history 历史分支。
++
++## 四、编译验证过程
++
++**环境**：Temurin JDK 17.0.20、Gradle 8.2（与 wrapper.properties 钉定版本一致）、AGP 8.2.1、Kotlin 1.8.20（build.gradle 钉定）、Android SDK Platform 34（AGP 自动安装）、build-tools 34.0.0。
++
++**编译所需的修改**（均可还原为作者本地的真实状态）：
++
++| 修改 | 原因 |
++|---|---|
++| `local.properties` 的 `sdk.dir` 改为本机路径 | 原文件写死 `D:\sdk` |
++| `compileSdkVersion 33` → `34` | `material:1.11.0` 的 POM 依赖 `androidx.activity:1.8.0`，其 AAR 元数据强制要求 compileSdk ≥ 34，AGP 8.2.1 下 33 直接编译失败。作者最后一次提交"更新依赖"把 material 升到 1.11.0 却没提交 compileSdk 34 的改动——即作者本地必然有这个未提交修改 |
++| 缺 `gradlew.bat` | 作者仓库只提交了 Unix 的 gradlew，Windows 需自行下载 Gradle 8.2 发行包调用 |
++| `kotlin.compiler.execution.strategy=in-process` | 本机沙箱限制 Kotlin 守护进程写系统临时目录（纯环境问题，与源码无关） |
++
++结果：`BUILD SUCCESSFUL`，产物 `app-release-unsigned.apk`（5,047,059 字节），混淆/资源收缩配置与作者发布版一致（minify + shrinkResources + 混淆字典）。
++
++## 五、编译产物 vs 你的 4.6.11 —— 实质差异
++
++dex 字符串池 18,867 vs 18,868 个字符串，过滤混淆名/资源路径噪音后，**全部差异如下**：
++
++| 仅在编译产物（4.6.10） | 仅在你的 4.6.11 |
++|---|---|
++| `4.6.10`（版本号） | `4.6.11`（版本号） |
++| `com.meizu.safe.security.net.HttpMethods` | `com.meizu.mzstore.MzAppCenterHttp` |
++| `com.meizu.safe.security.utils.Utils` | `com.meizu.safe.security.utils.PermissionUtils` |
++| （R8 构建标识，见下） | `阿巴阿巴阿巴~~` |
++
++两个 APK 内嵌的 R8 构建信息完全一致：`{"backend":"dex","compilation-mode":"release","min-api":33,"r8-mode":"full","version":"8.2.42"}` —— **作者就是用同一套 AGP 8.2.1 / R8 8.2.42 工具链构建的 4.6.11**。资源字符串（arsc）层面两边没有任何应用功能差异（4.6.11 相对 4.6.8 新增的 9 条中文资源全是 material 日期选择器库字符串）。
++
++**3 处代码差异的含义**（均属安装器 `com.android.packageinstaller` 相关的 hook 适配，推测魅族固件更新后类被改名，作者随之重新指向）：
++
++1. "移除安装界面官方商店下载按钮"功能：hook 目标从 `safe.security.net.HttpMethods.queryPackageInfoFromMzStoreV2` 改为 `mzstore.MzAppCenterHttp`（源码位置 FuckAd.kt:207）。
++2. "启用原生应用安装界面"功能：`isCtsRunning` hook 目标从 `safe.security.utils.Utils` 改为 `safe.security.utils.PermissionUtils`（源码位置 Others.kt:73）。
++3. 新增字符串 `阿巴阿巴阿巴~~`：**已通过反编译（jadx）精确定位**。4.6.11 在 `Start` 的 `handleInitPackageResources` 中新增了对 `com.meizu.customizecenter`（个性化中心/主题商店）的资源替换：
++
++   ```kotlin
++   if (resparam.packageName == "com.meizu.customizecenter") {
++       resparam.res.setReplacement(
++           R.style.ThemeOverlay_MaterialComponents_MaterialAlertDialog_Picker_Date_Header_Text_Day,
++           "阿巴阿巴阿巴~~"
++       )
++   }
++   ```
++
++   即把 material 日期选择器的"日期头部文字"资源替换成梗文案。这与主题试用破解相关——源码 ThemePatcher.kt 中已有同款先例（把个性化中心的试用按钮文案替换为"开始白嫖"，`res.res.setReplacement(0x7f110338, "开始白嫖")`），属于彩蛋性质的改动。
++
++## 六、"能不能用这个源码编译得到这个 APK？"
++
++- **功能上：能。** 编译公开源码得到的是 4.6.10（versionCode 558），与你手里的 4.6.11 在代码功能上完全同源，只差上面 3 处小改动。若想手工补齐：改版本号为 4.6.11/559，替换上述两个 hook 类名字符串，再在某处加上"阿巴阿巴阿巴~~"即可得到功能等价物（该字符串的准确位置无法从公开信息推断）。
++- **字节上：不能完全一致。** 作者签名私钥不可能获得（自签证书指纹必然不同）；R8 的 `pg-map-id` 每次构建不同；资源短文件名（res/2j.xml 等）与构建时间戳也不一致；项目未配置 reproducible builds。这是所有第三方编译的必然结果，不影响安装使用。
++- 注意：自编译版与本机自签名后**与作者签名不兼容**——不能覆盖安装官方版（需先卸载，会丢模块配置）。
++
++## 七、交付物
++
++| 文件 | 说明 |
++|---|---|
++| `D:\tmp\git\Flyme10助手_4.6.10_selfbuild_signed.apk` | 自编译 4.6.10，已签名（自签证书 CN=Flyme10 Self Build），可直接安装 |
++| `D:\tmp\git\FlymeHelper\app\build\outputs\mapping\release\mapping.txt` | 本构建的 R8 混淆映射表 |
++| `D:\tmp\git\FlymeHelper\` | 源码（dev 分支克隆，含上述构建修改） |
++| `D:\tmp\git\analysis\` | 对比数据：dex/arsc 字符串存档与差异清单 |
++
++签名密钥（如需重签/升级自编译版时保持同一签名）：`D:\tmp\git\flyme10build.keystore`，别名 `flyme10`，密码 `flyme10build`。
++
++构建环境（JDK/Gradle/SDK，共约 1.5GB，可随时删除）：`D:\tmp\git\tools\`、`D:\tmp\git\android-sdk\`、`D:\tmp\git\.gradle-home\`。重编译命令：设置 `JAVA_HOME=D:\tmp\git\tools\jdk-17.0.20.1+1`、`GRADLE_USER_HOME=D:\tmp\git\.gradle-home`、`ANDROID_HOME=D:\tmp\git\android-sdk` 后，在 `D:\tmp\git\FlymeHelper` 执行 `D:\tmp\git\tools\gradle-8.2\bin\gradle.bat assembleRelease`。
++
++## 八、4.6.12 复刻版构建说明
++
++应用户要求，在 4.6.10 公开源码上完整复刻了 4.6.11 的 3 处改动，并把版本号升到 **4.6.12（versionCode 560，即 4.6.11 的下一个版本）**：
++
++| # | 位置 | 改动 |
++|---|---|---|
++| 1 | `Start.kt` `handleInitPackageResources` | 新增 customizecenter 资源替换：`setReplacement(R.style.ThemeOverlay_..._Picker_Date_Header_Text_Day, "阿巴阿巴阿巴~~")` |
++| 2 | `Others.kt:73` | `"com.meizu.safe.security.utils.Utils"` → `"com.meizu.safe.security.utils.PermissionUtils"`（方法名 `isCtsRunning` 不变） |
++| 3 | `FuckAd.kt:207` | `"com.meizu.safe.security.net.HttpMethods"` → `"com.meizu.mzstore.MzAppCenterHttp"`（方法名 `queryPackageInfoFromMzStoreV2` 与 `"xxxx"` 参数改写均不变，已通过 4.6.11 dex 指令上下文逐一验证） |
++| 4 | `app/build.gradle` | `versionCode 558→560`，`versionName "4.6.10"→"4.6.12"` |
++
++产物：`D:\tmp\git\Flyme10助手_4.6.12_selfbuild_signed.apk`，与 4.6.10 自编译版使用**同一把自签名密钥**（`flyme10build.keystore`），二者可直接互相覆盖升级；仍不能覆盖安装作者官方签名的版本。
++
++## 九、libxposed 新 API（102）迁移说明
++
++应用户要求，将模块从传统 Xposed API（`de.robv.android.xposed`，api-82 jar）整体迁移到 **`io.github.libxposed:api:102.0.0`**（Maven Central 上的新式 Xposed API，AAR 发布），并重新编译。
++
++**入口与声明方式的变化**：
++
++| 旧（api-82） | 新（libxposed 102） |
++|---|---|
++| `assets/xposed_init` 声明 `IXposedHookLoadPackage` 实现类 | `META-INF/xposed/java_init.list` 声明 `XposedModule` 子类（已删除 xposed_init） |
++| `xposedscope` manifest meta-data | `META-INF/xposed/scope.list`（内容与原 @array/scope 一致，meta-data 保留无害） |
++| 无对应机制 | `META-INF/xposed/module.prop`：minApiVersion=101、targetApiVersion=102、exceptionMode=protective、staticScope=true |
++| `handleLoadPackage(lpparam)` | `onPackageLoaded(PackageLoadedParam)` |
++| `handleInitPackageResources(resparam)` | 新 API 无资源回调，见下文兼容方案 |
++| `initZygote` | 新 API（101 起）不再注入 zygote，各模块该方法保留但不再被调用 |
++
++**兼容层设计**（`com.coderstory.flyme10.xposedcompat`，13 个 Java 文件）：为了把 7 个功能模块的改动压到只换 import，兼容层用 **Java** 复刻了旧 API 的全部签名（`XC_MethodHook`/`XC_MethodReplacement`/`MethodHookParam`/`XposedBridge`/`XposedHelpers`/`LoadPackageParam`/`InitPackageResourcesParam`/`StartupParam`/`XSharedPreferences`/`AndroidAppHelper`），内部全部用新 API 实现：
++
++- hook 桥接（`HookerImpl`）：旧 before/proceed/after 模型 → 新拦截器链。语义映射与旧 XposedBridge 一致：before 中 `setResult/setThrowable` 跳过原方法、after 钩子始终执行、before 改参数透传原方法、回调异常捕获并记日志（module.prop 同时声明 protective 模式兜底）。
++- `findAndHookMethod/findAndHookConstructor/hookAllMethods/hookAllConstructors`：反射解析 `Member` 后调 `hook(Executable).intercept(...)`；方法查找支持继承链（顺带修复了旧版可能 hook 不到父类方法的边角情况）。
++- `XposedHelpers.getObjectField/setObjectField/setBooleanField/getIntField/callMethod`：纯 Java 反射重实现，无任何旧框架运行时依赖。
++- 偏好读取：`XSharedPreferences` 兼容类直接解析模块 App 的 `shared_prefs/UserSettings.xml`（与旧实现同一数据源，含 /data/data、/data/user/0、/data/user_de/0 三路径自动回退与 mtime 变更自动重载），UI 端零改动。
++- 资源替换（新 API 无资源回调）：`XResCompat` 按旧 `XResources.setReplacement` 的两种签名（int id / pkg+type+name）入队，模块加载时 hook `ContextWrapper.attachBaseContext`，在宿主 App 的 Resources 就绪后通过宿主框架的旧版 XResources 桥反射生效（LSPosed 在每个作用域进程都提供该桥）；框架不提供时优雅降级为跳过并记日志，全部方法 hook 不受影响。
++
++**7 个功能模块**（IsEnable/HideApp/Others/ThemePatcher/FuckAd/SystemUi/Start）与 `IModule`、`XposedHelper`、`Log` 基本只改了 import；`KotlinXposedHelper.kt`（456 行旧 DSL 死代码）精简为仅保留 `SystemUi` 用到的 `getObjectField` 扩展。
++
++**验证结果**（对 `app-release-unsigned.apk`）：
++- `META-INF/xposed/` 三个声明文件内容正确打包，`assets/xposed_init` 已移除；
++- dex 中旧 API 引用（`de.robv.*`、`android.content.res.XResources`）全部清零，新 API 描述符（`Lio/github/libxposed/api/XposedModule;`、`$Hooker;`）与入口类 `com.coderstory.flyme10.xposed.Start` 在位；
++- 与 4.6.11 逐字符串对比：所有业务功能字符串（MzAppCenterHttp/PermissionUtils/阿巴阿巴阿巴/开始白嫖 等 11 项标记）全部保留，缺失项仅为旧 API 按名反射调用的方法名字符串（新 API 直接调用，不再需要）与混淆字典差异；
++- manifest 版本保持 4.6.12（versionCode 560）。
++
++**产物**：`D:\tmp\git\Flyme10助手_4.6.12_libxposed102_signed.apk`（5,124,813 字节），与此前自编译版本使用同一签名（证书 SHA-256 `ed419703...726b`），可互相覆盖升级。
++
++**运行环境要求**：需要**支持 libxposed 新 API 的框架**（较新版本的 LSPosed / 未来实现 API 101+ 的框架）才能加载；仅在旧框架上使用时请继续使用此前的传统 API 版本 APK。由于 minApiVersion=101（不使用热重载等 102 专有特性），兼容所有已实现 101 的框架。
++
++**已移除的旧激活检测（修订）**：原 MainActivity 有两处"模块未激活"门禁，在 libxposed 版上必然误报，已删除——
++1. `checkEnable()`：App 内 `isEnable` 硬编码 false，原设计靠旧框架把模块注入自身 App 进程、由 `IsEnable` 模块 hook 该 getter 改为 true；新 API 严格按 scope.list 注入（模块自身不在作用域），hook 永远不生效，于是每次启动都弹"检测到插件尚未在框架中激活"。
++2. `checkDialog()`：用 `getSharedPreferences("test", MODE_WORLD_READABLE)` 是否抛 `SecurityException` 判断激活状态，误报时弹"插件配置初始化失败"并在确定后**强制杀进程**。
++
++两处文案在最终 APK 的 dex 与资源中均零残留（shrinkResources 连未引用的对话框布局一并清除）。模块实际是否激活，以 LSPosed 管理器中的勾选状态为准。
++
++**真机日志排查（LSPosed 2.2.1，2026-10-18）——所有 hook 失效的根因与修复**：
++
++用户反馈"模块已加载但所有 hook 项失效"。日志（modules/verbose）证据：
++1. 模块在每个作用域进程正常加载并 dispatch（`Flyme助手已加载（libxposed API 102，框架 LSPosed 2.2.1）`）；
++2. hook 桥端到端工作正常——`attachBaseContext` 的 hook 实际触发、回调打出日志；
++3. 但现代版运行时段**只有无开关条件的 hook 留下痕迹**（systemui 两个类缺失报错、launcher 的 load config、weather 的两个 CNFE——全部在纯包名判断块里），所有带 prefs 开关的 hook 一个都没注册；
++4. 传统版时代日志中出现 `New modules detected, hook preferences`（框架在模块 App 内 hook 偏好并放开文件可读性），现代版时代从未出现。
++
++根因：兼容层最初用**直读文件**方式读 `UserSettings.xml`。传统框架会把模块配置文件放开为全局可读（xposedsharedprefs 机制），但 **LSPosed 2.x 现代加载路径不做这件事**——文件 0600、属主是模块 uid，宿主进程必然读不到 → 所有开关读到默认 false → 所有功能 hook 不注册 → "全部失效"。
++
++修复（v3）：`XSharedPreferences` 兼容层改为**优先使用 API 101+ 的正规机制 `getRemotePreferences(group)`**——框架的特权服务把模块 App 的 shared_prefs 分发给各作用域进程（模块 App 端写入逻辑零改动），单次调用失败或嵌入框架时回退文件直读。同时在 `onModuleLoaded` 增加每进程一条诊断日志：`偏好读取: 框架远程服务/配置文件直读，N 项配置`——今后一眼可判配置是否读到。
++
++同时确认为**预期限制**（非缺陷）：LSPosed 2.x 现代模块路径不提供旧版 XResources 桥，资源替换类功能（主题试穿文案"开始白嫖"的字符串替换、customizecenter 的"阿巴阿巴"日期头样式）在 `attachBaseContext` 回调中探测失败后按设计优雅降级为跳过并记一次日志；方法类 hook 功能不受影响。
++
++**v3 真机验证结果与 v4 迭代（资源模拟替换）**：
++
++v3 上机：远程偏好服务连通（`偏好读取: 框架远程服务`诊断日志出现于每个作用域进程），"显秒"生效——证明 getRemotePreferences 修复方向正确。用户卸载重装后配置尚未写回时进程加载，诊断显示 `0 项配置`，属时序问题：卸载重装清空了数据，加载先于配置写入；时钟 hook 每次刷新重读配置所以自动恢复，但**加载时读配置的功能**（含电量%）在该次进程生命周期内都拿不到开关。⇒ v4 将兼容层改为：远程快照为空时回退合并文件直读，且**改完配置后需重启作用域应用**（现代路径下框架不会注入模块自身 App、无法监听配置变更自动重启作用域——传统路径的"hook preferences"机制依赖注入）。
++
++电量加%失效的另一半原因：它替换的是 systemui 包内字符串 `status_bar_settings_battery_meter_format_simple`（格式 `%d%%`），属**资源替换**。经查证：LSPosed 官方 Wiki 明确"Resource hooks are removed"（现代 API 已移除资源 hook，恢复方式未定）；社区方案 EzHookTool（lingqiqi5211，提供 hook-xposed-101 变体）与 HyperCeiler 的 ResourcesTool 采用**拦截 Resources/TypedArray getter、按包名+类型+名称匹配替换**的模拟技术。v4 未引入 RC 状态的第三方依赖，而是在 ResourceCompat 兼容层内嵌同款技术：旧桥缺失时 hook `Resources.getString(int)`/`getText(int)`/`getString(int, Object[])`，按运行时解析出的资源 ID 匹配替换值（名称式替换用 getIdentifier 解析，ID 式直接使用）。覆盖 Java 代码层的资源取值（电量格式即此类）；XML 布局/样式原生解析路径无法拦截，"阿巴阿巴"（style 替换）仍按设计跳过并记日志。
++
++**v3/v4 真机结论与 v5 重构（配置通道）**：
++
++v4 与降级回 v3 的运行日志均显示 `偏好读取: 0 项配置（远程服务=true）`——**LSPosed 2.2.1 的远程偏好服务实际上从未送达过用户配置**。此前 v3 上"显秒"一度生效，属框架服务的延迟同步的偶然产物；反复安装切换后彻底断供。根因：远程偏好的数据供给依赖"把模块注入其自身 App 进程并 hook 其偏好写入"（日志中 `hook preferences` 事件，仅传统路径存在）或模块 App 侧集成 libxposed:service 库——现代路径两者皆无。
++
++**v5 方案：绕开框架，启用原作者预留的跨进程通道**。App 本就声明了导出的 `com.coderstory.flyme10.PreferencesProvider`（SharedHelper 读写全走它）：
++1. 给 Provider 增加 `call("getAll", spName)` 全量读取接口（Bundle 返回，5 种类型）；
++2. 兼容层 `XSharedPreferences` 在远程快照为空时改为查询该 Provider（进程级共享 1 秒 TTL 缓存，避免时钟每秒多次 IPC）——宿主进程跨进程拉取 App 端文件的**实时**内容，不再依赖框架同步；为此加载期（宿主 Application 尚未创建）通过 ActivityThread 系统上下文获得 ContentResolver；
++3. 电量百分比替换改为**注册时无条件、查询时判开关**（Replacement 携带 gateKey，模拟层每次命中时经同一通道读 `show_icon_battery_percentage`）：开关切换即时生效、无需重启 systemui、重启手机不失效；
++4. proguard 增加两个 Provider 类的 keep 规则。
++
++## 十、附录：官方发布渠道现状
++
++- GitHub 源码仓库：仍在，但 2024-01-25 后无更新（最后一次发布 4.6.8 到官方 Xposed 仓库）。
++- 作者博客 blog.coderstory.cn：已无法访问，网页存档见上表。
++- 4.6.9–4.6.11 未进入官方 Xposed 仓库，应经作者博客/QQ群/Telegram 等渠道发布，目前也随博客下线而失联。

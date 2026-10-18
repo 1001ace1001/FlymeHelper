@@ -7,7 +7,6 @@ import com.coderstory.flyme10.patchModule.HideApp
 import com.coderstory.flyme10.patchModule.IsEnable
 import com.coderstory.flyme10.patchModule.Others
 import com.coderstory.flyme10.patchModule.SystemUi
-import com.coderstory.flyme10.patchModule.ThemePatcher
 import com.coderstory.flyme10.xposedcompat.InitPackageResourcesParam
 import com.coderstory.flyme10.xposedcompat.LoadPackageParam
 import com.coderstory.flyme10.xposedcompat.ResourceCompat
@@ -27,10 +26,11 @@ class Start : XposedModule() {
     override fun onModuleLoaded(param: ModuleLoadedParam) {
         XposedApi.api = this
         XposedBridge.log("Flyme助手已加载（libxposed API $apiVersion，框架 $frameworkName $frameworkVersion）")
-        // 诊断：配置读取来源与数量（远程服务 = 框架 getRemotePreferences，文件 = 直读降级）
+        // 诊断：逐通道读取计数（provider = App 端导出的 PreferencesProvider（DE 存储），
+        // 远程 = 框架 getRemotePreferences，文件 = 直读降级；-1 表示通道异常）
         val probe = XSharedPreferences(BuildConfig.APPLICATION_ID, "UserSettings")
         XposedBridge.log(
-            "偏好读取: ${probe.all.size} 项配置（远程服务=${probe.isRemote}）"
+            "偏好读取: ${probe.all.size} 项配置（${probe.channelReport()}）"
         )
         // The modern API has no resource callbacks; install the deferred replacement hook.
         ResourceCompat.install()
@@ -41,7 +41,6 @@ class Start : XposedModule() {
         IsEnable().handleLoadPackage(lpparam)
         HideApp().handleLoadPackage(lpparam)
         Others().handleLoadPackage(lpparam)
-        ThemePatcher().handleLoadPackage(lpparam)
         FuckAd().handleLoadPackage(lpparam)
         SystemUi().handleLoadPackage(lpparam)
 
@@ -55,6 +54,5 @@ class Start : XposedModule() {
         }
         Others().handleInitPackageResources(resparam)
         SystemUi().handleInitPackageResources(resparam)
-        ThemePatcher().handleInitPackageResources(resparam)
     }
 }

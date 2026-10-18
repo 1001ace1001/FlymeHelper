@@ -31,7 +31,17 @@
 | v1/v2 | 兼容层直接解析 `shared_prefs/UserSettings.xml` | 失败——现代加载路径不放开文件权限（0600/SELinux），所有开关读成 false |
 | v3 | `getRemotePreferences("UserSettings")` 优先 | 通道连通，但 LSPosed 2.2.1 从未送达数据（供给依赖注入模块自身 App 进程或 App 侧集成 service 库，现代路径两者皆无） |
 | v4 | 远程快照为空时合并文件直读 | 同样为空 |
-| **v5（最终）** | **远程为空 → 查询 App 端导出的 `PreferencesProvider`（`call("getAll")`，进程级 1 秒 TTL 缓存）→ 文件直读** | 跨进程实时拉取 App 端文件，与框架同步机制解耦 |
+| v5 | 远程为空 → 查询 App 端导出的 `PreferencesProvider`（`call("getAll")`，进程级 1 秒 TTL 缓存）→ 文件直读 | 通道打通：`flyme.update`（uid 1000）能拿到全部 13 项配置；但 systemui 等普通 uid 进程全部为 0 |
+| **v6（最终）** | **存储整体切换到设备加密存储（DE）+ provider 标记 `directBootAware`** | 解决"安装后 App 处于 stopped 状态导致普通 uid 进程连不上 provider"与"重启后首次解锁前配置不可读"两个根因 |
+
+v5 真机日志（2026-10-19 07:03）判定依据：`com.meizu.flyme.update`（uid 1000，系统进程豁免 stopped 限制）在进程启动后 19ms 内经 provider 拿到 13 项配置；同秒重启的 systemui/launcher（普通 uid）全部为 0——说明 provider 通道本身可用，但普通 App 进程在 App 处于 stopped 状态（每次安装/升级后、且未重新打开过 App）时会被 AMS 拦截。**因此：每次安装/升级后必须打开一次 App。**
+
+v6 改动：
+1. `Utils.getMySharedPreferences` 改为经 `createDeviceProtectedStorageContext()` 访问 DE 存储（App 端全部配置读写均经此函数，一处切换全量生效）；
+2. `PreferencesProvider` 标记 `android:directBootAware="true"`，App 的 `Application` 在 Direct Boot 模式下跳过友盟初始化——重启后首次解锁前 systemui 等进程即可读到配置；
+3. `Application` 启动时把旧版写在 CE 的配置一次性迁移到 DE（仅 DE 为空时执行，不会回滚）；
+4. 兼容层 `getAll()` 改为 **provider 优先**（远程服务在 LSPosed 2.2.1 上从未送达过数据），并新增 `channelReport()` 通道诊断：探针日志变为 `偏好读取: N 项配置（provider=P 远程=R 文件=F）`，-1 表示通道异常；
+5. **移除"主题无限试用"**（ThemePatcher 模块、设置开关、文案全部删除）：与 FlymeTool 等主题 hook 模块冲突，且其 hook 目标与硬编码资源 ID 在新 ROM 上不稳定；去广告等其余功能保留。
 
 配套：`PreferencesProvider`（原作者预留的导出组件）增加 `call("getAll", spName)` 全量读取接口；`ResourceCompat` 在宿主 `attachBaseContext` 时暂存 Application 供通道使用；proguard 保留两个 Provider 类。
 
@@ -54,7 +64,8 @@ LSPosed 官方已移除现代 API 的资源 hook（Wiki："Resource hooks are re
 - `Flyme10助手_4.6.12_libxposed102_v2_signed.apk`（移除激活自检）
 - `Flyme10助手_4.6.12_libxposed102_v3_signed.apk`（远程偏好优先）
 - `Flyme10助手_4.6.12_libxposed102_v4_signed.apk`（模拟资源替换）
-- `Flyme10助手_4.6.12_libxposed102_v5_signed.apk`（Provider 实时配置通道，最终版）
+- `Flyme10助手_4.6.12_libxposed102_v5_signed.apk`（Provider 实时配置通道）
+- `Flyme10助手_4.6.12_libxposed102_v6_signed.apk`（DE 存储 + directBootAware + 移除主题试用，最终版）
 
 ## 七、已知限制与注意事项
 

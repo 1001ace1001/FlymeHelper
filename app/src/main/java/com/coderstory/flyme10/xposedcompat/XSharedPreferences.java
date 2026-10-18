@@ -249,6 +249,13 @@ public final class XSharedPreferences {
     }
 
     public Map<String, Object> getAll() {
+        // 1) App 端导出的 PreferencesProvider：跨进程读取 App 实时配置文件。
+        //    v6 起为 DE 存储 + directBootAware，重启后首次解锁前（Direct Boot）即可使用。
+        Map<String, Object> fromProvider = providerGetAll(groupName);
+        if (fromProvider != null && !fromProvider.isEmpty()) {
+            return new HashMap<>(fromProvider);
+        }
+        // 2) 框架远程偏好服务（getRemotePreferences）
         ensureRemote();
         Map<String, Object> out = null;
         if (remote != null) {
@@ -257,26 +264,53 @@ public final class XSharedPreferences {
                 for (Map.Entry<String, ?> e : remote.getAll().entrySet()) {
                     out.put(e.getKey(), e.getValue());
                 }
-                // The remote service can return an empty snapshot right after process
-                // start (or before the app side has ever written anything). Only trust it
-                // when non-empty, otherwise fall back to the provider/file below.
                 if (!out.isEmpty()) {
                     return out;
                 }
             } catch (Throwable ignored) {
                 out = null;
-                // fall back to the provider / file for this call
+                // fall back to the file for this call
             }
         }
-        Map<String, Object> fromProvider = providerGetAll(groupName);
-        if (fromProvider != null && !fromProvider.isEmpty()) {
-            return new HashMap<>(fromProvider);
-        }
+        // 3) 文件直读降级
         reload();
         if (!values.isEmpty()) {
             return new HashMap<>(values);
         }
         return out != null ? out : new HashMap<String, Object>();
+    }
+
+    /**
+     * Diagnostic helper for the module load probe: per-channel item counts.
+     * "-1" marks a channel that threw (unavailable), "0" an empty response.
+     */
+    public String channelReport() {
+        ensureRemote();
+        int r;
+        if (remote != null) {
+            try {
+                r = remote.getAll().size();
+            } catch (Throwable t) {
+                r = -1;
+            }
+        } else {
+            r = -1;
+        }
+        int p;
+        try {
+            Map<String, Object> m = providerGetAll(groupName);
+            p = m == null ? -1 : m.size();
+        } catch (Throwable t) {
+            p = -1;
+        }
+        int f;
+        try {
+            reload();
+            f = values.size();
+        } catch (Throwable t) {
+            f = -1;
+        }
+        return "provider=" + p + " 远程=" + r + " 文件=" + f;
     }
 
     public boolean getBoolean(String key, boolean defValue) {

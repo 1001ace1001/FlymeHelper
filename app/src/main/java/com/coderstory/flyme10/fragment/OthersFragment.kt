@@ -52,10 +52,7 @@ class OthersFragment : BaseFragment() {
             editor.putBoolean("EnableBlockAD", (v as SwitchCompat).isChecked)
             fix()
         }
-        `$`<View>(R.id.enabletheme).setOnClickListener { v: View ->
-            editor.putBoolean("enabletheme", (v as SwitchCompat).isChecked)
-            fix()
-        }
+        // v6：主题无限试用已移除（与 FlymeTool 等主题 hook 冲突，且试用服务的 hook 目标在新 ROM 上不稳定）
         `$`<View>(R.id.hide_icon_label).setOnClickListener { v: View ->
             editor.putBoolean("hide_icon_label", (v as SwitchCompat).isChecked)
             fix()
@@ -135,8 +132,6 @@ class OthersFragment : BaseFragment() {
             prefs.getBoolean("hide_icon_label", false)
         (`$`<View>(R.id.enableBlockAD) as SwitchCompat).isChecked =
             prefs.getBoolean("EnableBlockAD", false)
-        (`$`<View>(R.id.enabletheme) as SwitchCompat).isChecked =
-            prefs.getBoolean("enabletheme", false)
         (`$`<View>(R.id.enableCheckInstaller) as SwitchCompat).isChecked =
             prefs.getBoolean("enableCheckInstaller", false)
         (`$`<View>(R.id.enableCTS) as SwitchCompat).isChecked = prefs.getBoolean("enableCTS", false)

@@ -65,6 +65,7 @@
         <provider
             android:name=".PreferencesProvider"
             android:authorities="com.coderstory.flyme10.PreferencesProvider"
+            android:directBootAware="true"
             android:exported="true" />
     </application>
 </manifest>

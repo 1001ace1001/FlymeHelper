@@ -34,3 +34,6 @@ proguard/
 .idea/
 
 class_files.txt
+
+# 本地构建产物输出目录
+/out/

@@ -4,6 +4,9 @@ import android.app.Application;
 import android.content.Context;
 import android.content.ContextWrapper;
 import android.content.res.Resources;
+import android.text.SpannableString;
+import android.text.Spanned;
+import android.text.style.CharacterStyle;
 
 import java.lang.reflect.Method;
 import java.util.ArrayList;
@@ -95,14 +98,76 @@ public final class ResourceCompat {
         return e.value;
     }
 
+    /**
+     * Some ROM string resources carry style spans (e.g. &lt;font&gt; color markup) — the
+     * host view renders the text with those styles. Replacing such a value with a plain
+     * String would strip the spans and the text would fall back to the view's default
+     * paint (observed as "white text on white background" etc.). When the original value
+     * is a Spanned, copy its CharacterStyle spans onto the replacement text so only the
+     * characters change, not the styling.
+     */
+    private static Object withOriginalSpans(Object replacement, Object original) {
+        if (!(original instanceof Spanned) || !(replacement instanceof String)) {
+            return replacement;
+        }
+        try {
+            Spanned src = (Spanned) original;
+            SpannableString out = new SpannableString((String) replacement);
+            Object[] spans = src.getSpans(0, src.length(), CharacterStyle.class);
+            int len = out.length();
+            for (Object span : spans) {
+                int s = Math.min(src.getSpanStart(span), len);
+                int e = Math.min(src.getSpanEnd(span), len);
+                out.setSpan(span, s, e, src.getSpanFlags(span));
+            }
+            return out;
+        } catch (Throwable t) {
+            return replacement;
+        }
+    }
+
+    /** Per-id throttle for hit diagnostics: first hit, then at most one per minute. */
+    private static final ConcurrentHashMap<Integer, Long> HIT_LOG_AT = new ConcurrentHashMap<>();
+
+    private static void maybeLogHit(int id, Object original, Object replaced) {
+        long now = System.nanoTime() / 1_000_000L;
+        Long last = HIT_LOG_AT.get(id);
+        if (last != null && now - last < 60_000L) {
+            return;
+        }
+        HIT_LOG_AT.put(id, now);
+        StringBuilder sb = new StringBuilder();
+        sb.append("资源替换诊断 id=0x").append(Integer.toHexString(id));
+        sb.append(" 原值=").append(original == null ? "null" : original.toString());
+        sb.append(" 原值类型=").append(original == null ? "null" : original.getClass().getName());
+        if (original instanceof Spanned) {
+            Spanned sp = (Spanned) original;
+            Object[] spans = sp.getSpans(0, sp.length(), CharacterStyle.class);
+            sb.append("（样式Span: ");
+            for (Object s : spans) {
+                sb.append(s.getClass().getSimpleName()).append(' ');
+            }
+            sb.append("）");
+        }
+        sb.append(" 替换后=").append(replaced);
+        sb.append("\n调用栈:");
+        StackTraceElement[] st = new Exception().getStackTrace();
+        int n = Math.min(st.length, 18);
+        for (int i = 0; i < n; i++) {
+            sb.append("\n  at ").append(st[i].toString());
+        }
+        XposedBridge.log(sb.toString());
+    }
+
     private static final XC_MethodHook STRING_HOOK = new XC_MethodHook() {
         @Override
         protected void afterHookedMethod(MethodHookParam param) {
             Entry e = BY_ID.get(param.args[0]);
             if (e != null) {
                 Object v = effectiveValue(e);
+                maybeLogHit((Integer) param.args[0], param.getResult(), v);
                 if (v instanceof String) {
-                    param.setResult(v);
+                    param.setResult(withOriginalSpans(v, param.getResult()));
                 }
             }
         }
@@ -114,8 +179,9 @@ public final class ResourceCompat {
             Entry e = BY_ID.get(param.args[0]);
             if (e != null) {
                 Object v = effectiveValue(e);
+                maybeLogHit((Integer) param.args[0], param.getResult(), v);
                 if (v instanceof String) {
-                    param.setResult(v);
+                    param.setResult(withOriginalSpans(v, param.getResult()));
                 }
             }
         }
@@ -127,6 +193,7 @@ public final class ResourceCompat {
             Entry e = BY_ID.get(param.args[0]);
             if (e != null) {
                 Object v = effectiveValue(e);
+                maybeLogHit((Integer) param.args[0], param.getResult(), v);
                 if (v instanceof String) {
                     try {
                         param.setResult(String.format((String) v, (Object[]) param.args[1]));

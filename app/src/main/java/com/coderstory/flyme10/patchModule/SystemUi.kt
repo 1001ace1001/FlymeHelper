@@ -28,6 +28,102 @@ import java.util.*
 
 class SystemUi : XposedHelper(), IModule {
 
+    companion object {
+        /** 最近一次状态栏时钟文字颜色——明暗分发下电池着色的"健康"参照。 */
+        @Volatile
+        var lastClockTint: Int = 0
+
+        /** 守卫纠偏日志节流 */
+        @Volatile
+        private var tintLogAt = 0L
+
+        private val correcting = ThreadLocal.withInitial { false }
+
+        private fun colorClose(a: Int, b: Int): Boolean {
+            if (a ushr 24 != b ushr 24) {
+                return false // alpha 通道不同即视为偏离
+            }
+            val dr = (a shr 16 and 0xFF) - (b shr 16 and 0xFF)
+            val dg = (a shr 8 and 0xFF) - (b shr 8 and 0xFF)
+            val db = (a and 0xFF) - (b and 0xFF)
+            return dr * dr + dg * dg + db * db <= 128 * 128
+        }
+    }
+
+    /**
+     * 电池着色守卫：Flyme 的 FlymeBatteryMeterView 图标与百分比文字共用 mFilterColor，
+     * 其他美化类模块（FlymeTool / flyme-mod 家族）改色、改罩色的 hook 可能污染该值，
+     * 表现为切换界面（明暗切换）时电量"白底白字、黑底黑字"。
+     * 同一条状态栏里的时钟始终正确，以其文字色为参照，在每次 apply 后校验并强制纠正。
+     * 类结构参考 flyme-mod（ChargingInfoHooks）对同 ROM 的实现。
+     */
+    private fun installBatteryTintGuard(classLoader: ClassLoader) {
+        try {
+            val type = XposedHelpers.findClass(
+                "com.flyme.statusbar.battery.FlymeBatteryMeterView",
+                classLoader
+            )
+            val percentField = type.getDeclaredField("mBatteryPercentView")
+            val filterField = type.getDeclaredField("mFilterColor")
+            percentField.isAccessible = true
+            filterField.isAccessible = true
+            val locations = WeakHashMap<Any, String>()
+            XposedHelpers.findAndHookMethod(
+                type, "setBatteryPercentView",
+                TextView::class.java, String::class.java,
+                object : XC_MethodHook() {
+                    override fun afterHookedMethod(param: MethodHookParam) {
+                        (param.args[1] as? String)?.let { locations[param.thisObject] = it }
+                    }
+                }
+            )
+            XposedHelpers.findAndHookMethod(
+                type, "apply",
+                Boolean::class.javaPrimitiveType,
+                object : XC_MethodHook() {
+                    override fun afterHookedMethod(param: MethodHookParam) {
+                        val view = param.thisObject ?: return
+                        if (locations[view] != "StatusBar") {
+                            return // 锁屏电池遵循另一套明暗参照，不参与校验
+                        }
+                        val ref = lastClockTint
+                        if (ref == 0) {
+                            return // 尚无时钟参照
+                        }
+                        if (correcting.get()) {
+                            return
+                        }
+                        val cur = filterField.getInt(view)
+                        if (colorClose(cur, ref)) {
+                            return
+                        }
+                        // 被污染：以时钟色纠正图标色（mFilterColor）与百分比文字色
+                        filterField.setInt(view, ref)
+                        (percentField.get(view) as? TextView)?.setTextColor(ref)
+                        val now = SystemClock.elapsedRealtime()
+                        if (now - tintLogAt > 60_000) {
+                            tintLogAt = now
+                            XposedBridge.log(
+                                "电池着色守卫: 检测到着色偏离(0x" + Integer.toHexString(cur) +
+                                    ")，已按状态栏时钟色纠正为 0x" + Integer.toHexString(ref)
+                            )
+                        }
+                        correcting.set(true)
+                        try {
+                            // 让 ROM 自身按纠正后的 mFilterColor 重绘图标与文字
+                            XposedHelpers.callMethod(view, "apply", param.args[0])
+                        } finally {
+                            correcting.set(false)
+                        }
+                    }
+                }
+            )
+            XposedBridge.log("电池着色守卫已挂载（FlymeBatteryMeterView）")
+        } catch (t: Throwable) {
+            XposedBridge.log("电池着色守卫不可用: $t")
+        }
+    }
+
 
     override fun handleInitPackageResources(respray: InitPackageResourcesParam) {
         if (respray.packageName == "com.android.systemui") {
@@ -45,6 +141,8 @@ class SystemUi : XposedHelper(), IModule {
 
     override fun handleLoadPackage(param: LoadPackageParam) {
         if (param.packageName == "com.android.systemui") {
+            // 电池着色守卫：无条件安装，健康时零开销（仅校验，不偏离不动作）
+            installBatteryTintGuard(param.classLoader)
             val statusBarCustomCarrierName = prefs.getString("status_bar_custom_carrier_name", "")
             if (statusBarCustomCarrierName != "") {
                 hookAllConstructors(
@@ -254,6 +352,8 @@ class SystemUi : XposedHelper(), IModule {
                 object : XC_MethodHook() {
                     @Throws(Throwable::class)
                     override fun afterHookedMethod(param: MethodHookParam) {
+                        // 记录状态栏时钟文字色，作为电池着色守卫的参照
+                        (param.thisObject as? TextView)?.let { lastClockTint = it.currentTextColor }
                         // XposedBridge.log("内部读取值" + prefs.getBoolean("show_status_bar_time_second_icon", false));
                         if ("" != prefs.getString("status_bar_custom_time", "")) {
                             param.result = SimpleDateFormat(

@@ -1,36 +1,34 @@
 package com.coderstory.flyme10.xposedcompat;
 
+import android.content.Intent;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.SystemClock;
-import android.util.Xml;
-
-import org.xmlpull.v1.XmlPullParser;
 
 import java.io.File;
-import java.io.FileInputStream;
-import java.util.Collections;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
 
 import io.github.libxposed.api.XposedInterface;
 
 /**
- * Legacy-shaped read-only preferences.
+ * Legacy-shaped read-only preferences for hooked processes.
  *
- * <p>Primary source on modern frameworks (API 101+): the framework's remote
- * preferences service ({@link XposedInterface#getRemotePreferences}), which
- * serves the module app's {@code shared_prefs/<name>.xml} to hooked processes
- * through the framework's privileged daemon. Reading the file directly from a
- * hooked process is impossible there: the file is {@code 0600} and owned by the
- * module's uid (the legacy frameworks used to relax permissions; modern ones
- * do not).</p>
+ * <p>Channels (in order):</p>
+ * <ol>
+ *   <li>the module app's exported {@code PreferencesProvider} — a cross-process
+ *       {@code ContentResolver.call("getAll")} that always reflects the app's
+ *       current (device-encrypted) storage, available even before the first
+ *       unlock thanks to the provider being directBootAware;</li>
+ *   <li>the framework's remote preferences service
+ *       ({@link XposedInterface#getRemotePreferences}), for frameworks that
+ *       actually serve it.</li>
+ * </ol>
  *
- * <p>Fallback (no framework attached, embedded framework, or service failure
- * on a call): parse the module app's {@code shared_prefs/<name>.xml} file
- * directly, exactly like the legacy XSharedPreferences did.</p>
+ * <p>The legacy file-direct XML parsing path has been removed: on modern
+ * frameworks the module's shared_prefs file is {@code 0600} behind SELinux and
+ * can never be read from hooked processes, so the code was dead weight.</p>
  */
 public final class XSharedPreferences {
 
@@ -38,10 +36,7 @@ public final class XSharedPreferences {
 
     private final String packageName;
     private final String prefFileName;   // display name, always with .xml
-    private final String groupName;      // remote preferences group (no .xml)
-    private final File[] candidates;
-    private Map<String, Object> values = Collections.emptyMap();
-    private long lastModified = 0L;
+    private final String groupName;      // group name (no .xml)
 
     private android.content.SharedPreferences remote;
     private boolean remoteChecked = false;
@@ -49,13 +44,61 @@ public final class XSharedPreferences {
     /**
      * Process-wide cache of values fetched through the module app's exported
      * PreferencesProvider (content://...PreferencesProvider, call method "getAll").
-     * This channel always reflects the app's current file, independent of any
-     * framework preference sync. Bounded by a short TTL to keep IPC cheap.
+     * Bounded by a short TTL to keep IPC cheap.
      */
     private static final long PROVIDER_TTL_MS = 1000L;
     private static final Object PROVIDER_LOCK = new Object();
     private static volatile Map<String, Object> providerCache;
     private static volatile long providerCacheAt = Long.MIN_VALUE;
+
+    private static Map<String, Object> callProvider(String groupName) {
+        try {
+            android.content.Context ctx = AndroidAppHelper.anyContext();
+            if (ctx == null) {
+                return null;
+            }
+            Uri uri = Uri.parse("content://" + MODULE_PACKAGE + ".PreferencesProvider");
+            Bundle b = ctx.getContentResolver().call(uri, "getAll", groupName, null);
+            if (b == null) {
+                return null;
+            }
+            Map<String, Object> out = new HashMap<>();
+            for (String k : b.keySet()) {
+                out.put(k, b.get(k));
+            }
+            return out;
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    private static volatile boolean wakeAttempted = false;
+
+    /**
+     * 安装/升级后未打开过、或被系统强制停止的 App 处于 stopped 状态：普通 uid 的宿主进程
+     * 对其 provider 的访问会被系统拦截（uid 1000 的系统进程豁免——真机日志中
+     * flyme.update 与 system:ui 每次都能读到配置，而 systemui/launcher 全部失败）。
+     * 发送携带 FLAG_INCLUDE_STOPPED_PACKAGES 的显式广播唤醒一次以清除该状态。
+     */
+    private static void wakeModule() {
+        if (wakeAttempted) {
+            return;
+        }
+        wakeAttempted = true;
+        try {
+            android.content.Context ctx = AndroidAppHelper.anyContext();
+            if (ctx == null) {
+                return;
+            }
+            Intent i = new Intent();
+            i.setClassName(MODULE_PACKAGE, MODULE_PACKAGE + ".tools.WakeReceiver");
+            i.addFlags(Intent.FLAG_INCLUDE_STOPPED_PACKAGES);
+            ctx.sendBroadcast(i);
+            XposedBridge.log("偏好通道: provider 不可达，已发送 stopped 唤醒广播");
+        } catch (Throwable t) {
+            XposedBridge.log(t);
+        }
+    }
 
     private static Map<String, Object> providerGetAll(String groupName) {
         synchronized (PROVIDER_LOCK) {
@@ -64,21 +107,14 @@ public final class XSharedPreferences {
             if (cached != null && now - providerCacheAt < PROVIDER_TTL_MS) {
                 return cached;
             }
-            Map<String, Object> fresh = null;
-            try {
-                android.content.Context ctx = AndroidAppHelper.anyContext();
-                if (ctx != null) {
-                    Uri uri = Uri.parse("content://" + MODULE_PACKAGE + ".PreferencesProvider");
-                    Bundle b = ctx.getContentResolver().call(uri, "getAll", groupName, null);
-                    if (b != null) {
-                        fresh = new HashMap<>();
-                        for (String k : b.keySet()) {
-                            fresh.put(k, b.get(k));
-                        }
-                    }
+            Map<String, Object> fresh = callProvider(groupName);
+            if (fresh == null) {
+                wakeModule(); // 解除 stopped 状态后重试一次
+                try {
+                    Thread.sleep(400);
+                } catch (InterruptedException ignored) {
                 }
-            } catch (Throwable ignored) {
-                fresh = null; // provider not available (early boot / not installed / denied)
+                fresh = callProvider(groupName);
             }
             if (fresh != null) {
                 providerCache = fresh;
@@ -90,23 +126,18 @@ public final class XSharedPreferences {
     }
 
     public XSharedPreferences(String packageName, String prefFileName) {
-        this(packageName, prefFileName,
-                new File("/data/data/" + packageName + "/shared_prefs/" + prefFileName + ".xml"));
+        this.packageName = packageName;
+        this.prefFileName = prefFileName.endsWith(".xml") ? prefFileName : prefFileName + ".xml";
+        this.groupName = stripXml(prefFileName);
     }
 
     public XSharedPreferences(String prefFileName) {
         this(MODULE_PACKAGE, prefFileName);
     }
 
+    /** Kept for source compatibility with the legacy API; the file is never read. */
     public XSharedPreferences(File file) {
-        this(MODULE_PACKAGE, stripXml(file.getName()), file);
-    }
-
-    private XSharedPreferences(String packageName, String prefFileName, File file) {
-        this.packageName = packageName;
-        this.prefFileName = prefFileName.endsWith(".xml") ? prefFileName : prefFileName + ".xml";
-        this.groupName = stripXml(prefFileName);
-        this.candidates = candidatePaths(file);
+        this(MODULE_PACKAGE, stripXml(file.getName()));
     }
 
     private static String stripXml(String name) {
@@ -125,7 +156,7 @@ public final class XSharedPreferences {
                 remote = x.getRemotePreferences(groupName);
             }
         } catch (Throwable t) {
-            // Embedded framework or preferences service unavailable: fall back to the file.
+            // Embedded framework or preferences service unavailable
             remote = null;
         }
     }
@@ -136,131 +167,18 @@ public final class XSharedPreferences {
         return remote != null;
     }
 
-    private static File[] candidatePaths(File file) {
-        String path = file.getPath();
-        if (path.startsWith("/data/data/")) {
-            String rest = path.substring("/data/data/".length());
-            return new File[]{
-                    file,
-                    new File("/data/user/0/" + rest),
-                    new File("/data/user_de/0/" + rest),
-            };
-        }
-        if (path.startsWith("/data/user/0/")) {
-            String rest = path.substring("/data/user/0/".length());
-            return new File[]{
-                    file,
-                    new File("/data/data/" + rest),
-                    new File("/data/user_de/0/" + rest),
-            };
-        }
-        if (path.startsWith("/data/user_de/0/")) {
-            String rest = path.substring("/data/user_de/0/".length());
-            return new File[]{
-                    file,
-                    new File("/data/data/" + rest),
-                    new File("/data/user/0/" + rest),
-            };
-        }
-        return new File[]{file};
-    }
-
-    private File currentFile() {
-        for (File f : candidates) {
-            if (f.exists() && f.canRead()) {
-                return f;
-            }
-        }
-        return null;
-    }
-
-    /** Reloads the file if it has changed since the last read. */
-    public synchronized void reload() {
-        File f = currentFile();
-        if (f == null) {
-            values = Collections.emptyMap();
-            return;
-        }
-        long mtime = f.lastModified();
-        if (mtime == lastModified && !values.isEmpty()) {
-            return;
-        }
-        Map<String, Object> parsed = parse(f);
-        if (parsed != null) {
-            values = parsed;
-            lastModified = mtime;
-        }
-    }
-
-    private static Map<String, Object> parse(File file) {
-        Map<String, Object> out = new HashMap<>();
-        XmlPullParser parser = Xml.newPullParser();
-        try (FileInputStream is = new FileInputStream(file)) {
-            parser.setFeature(XmlPullParser.FEATURE_PROCESS_NAMESPACES, false);
-            parser.setInput(is, null);
-            int event = parser.getEventType();
-            while (event != XmlPullParser.END_DOCUMENT) {
-                if (event == XmlPullParser.START_TAG) {
-                    String tag = parser.getName();
-                    if ("boolean".equals(tag)) {
-                        out.put(parser.getAttributeValue(null, "name"),
-                                Boolean.parseBoolean(parser.getAttributeValue(null, "value")));
-                    } else if ("string".equals(tag)) {
-                        String name = parser.getAttributeValue(null, "name");
-                        // text may arrive in multiple chunks
-                        StringBuilder sb = new StringBuilder();
-                        int next = parser.next();
-                        while (next == XmlPullParser.TEXT) {
-                            sb.append(parser.getText());
-                            next = parser.next();
-                        }
-                        out.put(name, sb.toString());
-                        continue;
-                    } else if ("int".equals(tag)) {
-                        out.put(parser.getAttributeValue(null, "name"),
-                                Integer.parseInt(parser.getAttributeValue(null, "value")));
-                    } else if ("long".equals(tag)) {
-                        out.put(parser.getAttributeValue(null, "name"),
-                                Long.parseLong(parser.getAttributeValue(null, "value")));
-                    } else if ("float".equals(tag)) {
-                        out.put(parser.getAttributeValue(null, "name"),
-                                Float.parseFloat(parser.getAttributeValue(null, "value")));
-                    } else if ("set".equals(tag)) {
-                        String name = parser.getAttributeValue(null, "name");
-                        Set<String> set = new HashSet<>();
-                        int depth = parser.getDepth();
-                        // consume nested <string> entries
-                        while (!(parser.next() == XmlPullParser.END_TAG
-                                && "set".equals(parser.getName()) && parser.getDepth() == depth)) {
-                            if (parser.getEventType() == XmlPullParser.START_TAG
-                                    && "string".equals(parser.getName())) {
-                                set.add(parser.nextText());
-                            }
-                        }
-                        out.put(name, set);
-                    }
-                }
-                event = parser.next();
-            }
-            return out;
-        } catch (Throwable t) {
-            return null;
-        }
-    }
-
     public Map<String, Object> getAll() {
-        // 1) App 端导出的 PreferencesProvider：跨进程读取 App 实时配置文件。
-        //    v6 起为 DE 存储 + directBootAware，重启后首次解锁前（Direct Boot）即可使用。
+        // 1) App 端导出的 PreferencesProvider：跨进程读取 App 实时配置
+        //    （DE 存储 + directBootAware，重启后首次解锁前即可使用）
         Map<String, Object> fromProvider = providerGetAll(groupName);
         if (fromProvider != null && !fromProvider.isEmpty()) {
             return new HashMap<>(fromProvider);
         }
         // 2) 框架远程偏好服务（getRemotePreferences）
         ensureRemote();
-        Map<String, Object> out = null;
         if (remote != null) {
             try {
-                out = new HashMap<>();
+                Map<String, Object> out = new HashMap<>();
                 for (Map.Entry<String, ?> e : remote.getAll().entrySet()) {
                     out.put(e.getKey(), e.getValue());
                 }
@@ -268,25 +186,26 @@ public final class XSharedPreferences {
                     return out;
                 }
             } catch (Throwable ignored) {
-                out = null;
-                // fall back to the file for this call
+                // fall through to empty
             }
         }
-        // 3) 文件直读降级
-        reload();
-        if (!values.isEmpty()) {
-            return new HashMap<>(values);
-        }
-        return out != null ? out : new HashMap<String, Object>();
+        return new HashMap<String, Object>();
     }
 
     /**
      * Diagnostic helper for the module load probe: per-channel item counts.
-     * "-1" marks a channel that threw (unavailable), "0" an empty response.
+     * "-1" marks a channel that is unavailable.
      */
     public String channelReport() {
-        ensureRemote();
+        int p;
+        try {
+            Map<String, Object> m = providerGetAll(groupName);
+            p = m == null ? -1 : m.size();
+        } catch (Throwable t) {
+            p = -1;
+        }
         int r;
+        ensureRemote();
         if (remote != null) {
             try {
                 r = remote.getAll().size();
@@ -296,21 +215,7 @@ public final class XSharedPreferences {
         } else {
             r = -1;
         }
-        int p;
-        try {
-            Map<String, Object> m = providerGetAll(groupName);
-            p = m == null ? -1 : m.size();
-        } catch (Throwable t) {
-            p = -1;
-        }
-        int f;
-        try {
-            reload();
-            f = values.size();
-        } catch (Throwable t) {
-            f = -1;
-        }
-        return "provider=" + p + " 远程=" + r + " 文件=" + f;
+        return "provider=" + p + " 远程=" + r;
     }
 
     public boolean getBoolean(String key, boolean defValue) {
@@ -340,12 +245,6 @@ public final class XSharedPreferences {
         Object v = getAll().get(key);
         //noinspection unchecked
         return v instanceof Set ? (Set<String>) v : defValue;
-    }
-
-    @SuppressWarnings("unused")
-    public String getFile() {
-        File f = currentFile();
-        return f == null ? candidates[0].getPath() : f.getPath();
     }
 
     @SuppressWarnings("unused")

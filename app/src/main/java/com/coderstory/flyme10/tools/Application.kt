@@ -1,27 +1,38 @@
 package com.coderstory.flyme10.tools
 
 import android.app.Application
+import android.os.UserManager
 import com.coderstory.flyme10.tools.Misc.SharedPreferencesName
 import com.umeng.commonsdk.UMConfigure
 
 class Application : Application() {
     override fun onCreate() {
         super.onCreate()
+        // Direct Boot（解锁前）仅因 directBootAware 的 PreferencesProvider/WakeReceiver 被拉起：
+        // 此时 CE 存储尚未解锁，业务组件（友盟、配置迁移）一律不初始化，防止崩溃循环。
+        // 注意：解锁前 App 拿到的上下文未必标记 isDeviceProtectedStorage，因此以
+        // UserManager.isUserUnlocked 为准（真机崩溃日志：解锁前拉起后 IllegalStateException）。
+        val um = getSystemService(UserManager::class.java)
+        if (um != null && !um.isUserUnlocked) {
+            return
+        }
         if (applicationContext.isDeviceProtectedStorage) {
-            // Direct Boot（解锁前）模式：仅因 directBootAware 的 PreferencesProvider 被拉起，
-            // 不初始化友盟等业务组件，保证解锁前 provider 稳定可用
             return
         }
         migrateLegacyPrefs()
-        UMConfigure.setLogEnabled(true)
-        UMConfigure.preInit(applicationContext, "5ee5d80f978ea081640e210", "weibo")
-        UMConfigure.init(
-            this,
-            "5ee5d80f978eea081640e210",
-            "weibo",
-            UMConfigure.DEVICE_TYPE_PHONE,
-            ""
-        )
+        // 友盟初始化失败不应拖垮进程（解锁过渡期等场景），任何异常一律吞掉
+        try {
+            UMConfigure.setLogEnabled(true)
+            UMConfigure.preInit(applicationContext, "5ee5d80f978eea081640e210", "weibo")
+            UMConfigure.init(
+                this,
+                "5ee5d80f978eea081640e210",
+                "weibo",
+                UMConfigure.DEVICE_TYPE_PHONE,
+                ""
+            )
+        } catch (ignored: Throwable) {
+        }
     }
 
     /**

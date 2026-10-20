@@ -58,8 +58,14 @@ abstract class PreferencesProvider : ContentProvider() {
     abstract val authorities: String
     override fun onCreate(): Boolean {
         val authorities = authorities
-        //保存authorities
-        PreferencesUtils.putString(context, AUTHORITIES_SPNAME, AUTHORITIES_KEY, authorities)
+        //保存authorities。注意本方法在 Application.onCreate 之前执行：
+        //Direct Boot（解锁前）/解锁过渡期 CE 存储不可用，此处写 CE 会抛
+        //IllegalStateException 并造成崩溃循环（宿主每次查询 provider 都重新拉起进程），
+        //故失败时跳过——该值仅供 App 端工具读取，解锁后任意一次进程启动都会补写。
+        try {
+            PreferencesUtils.putString(context, AUTHORITIES_SPNAME, AUTHORITIES_KEY, authorities)
+        } catch (ignored: Exception) {
+        }
         mUriMatcher = UriMatcher(UriMatcher.NO_MATCH)
         mUriMatcher!!.addURI(authorities, mStringPath, STRING_CONTENT_URI_CODE)
         mUriMatcher!!.addURI(authorities, "$mStringPath*/", STRING_CONTENT_URI_CODE)

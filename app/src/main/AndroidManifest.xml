@@ -56,15 +56,17 @@
             android:name="xposedminversion"
             android:value="54" />
         <meta-data
-            android:name="xposedsharedprefs"
-            android:value="true" />
-        <meta-data
             android:name="xposedscope"
             android:resource="@array/scope" />
 
         <provider
             android:name=".PreferencesProvider"
             android:authorities="com.coderstory.flyme10.PreferencesProvider"
+            android:directBootAware="true"
+            android:exported="true" />
+
+        <receiver
+            android:name=".tools.WakeReceiver"
             android:directBootAware="true"
             android:exported="true" />
     </application>

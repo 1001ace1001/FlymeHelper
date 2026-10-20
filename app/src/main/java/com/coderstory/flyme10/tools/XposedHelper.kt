@@ -6,7 +6,6 @@ import com.coderstory.flyme10.xposedcompat.XSharedPreferences
 import com.coderstory.flyme10.xposedcompat.XposedBridge
 import com.coderstory.flyme10.xposedcompat.XposedHelpers
 import com.coderstory.flyme10.xposedcompat.XposedHelpers.ClassNotFoundError
-import java.io.File
 
 open class XposedHelper {
     var prefs: XSharedPreferences
@@ -138,10 +137,9 @@ open class XposedHelper {
     }
 
     init {
+        // 配置读取：provider（App 端导出的 PreferencesProvider，DE 存储）→ 框架远程偏好，
+        // 见 xposedcompat.XSharedPreferences。旧版按文件路径直读 XML 的机制已移除——
+        // 现代 SELinux/存储策略下宿主进程永远读不到模块私有文件，属死代码。
         prefs = XSharedPreferences(BuildConfig.APPLICATION_ID, Misc.SharedPreferencesName)
-        if (prefs.all.keys.size == 0) {
-            prefs =
-                XSharedPreferences(File("/data/user_de/0/" + Misc.ApplicationName + "/shared_prefs/" + Misc.SharedPreferencesName + ".xml"))
-        }
     }
 }

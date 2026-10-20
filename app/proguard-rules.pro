@@ -42,3 +42,5 @@
 # 跨进程配置通道：宿主进程通过 ContentResolver.call("getAll") 调用导出的 provider
 -keep class com.coderstory.flyme10.PreferencesProvider { *; }
 -keep class com.coderstory.flyme10.preferences.PreferencesProvider { *; }
+# stopped 状态唤醒接收器（宿主进程发送显式广播）
+-keep class com.coderstory.flyme10.tools.WakeReceiver { *; }

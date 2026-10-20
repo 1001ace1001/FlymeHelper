@@ -54,6 +54,8 @@ v6 改动：
 3. **崩溃循环修复**（真机崩溃日志：`IllegalStateException: SharedPreferences in credential encrypted storage are not available until after user (id 0) is unlocked`，Occurrence 27）：崩溃点在 `PreferencesProvider.onCreate()`——它先于 `Application.onCreate` 执行，且启动即向 CE 存储写 authorities 字符串；解锁前/解锁过渡期被拉起即抛异常，宿主每次查询 provider 又重新拉起进程形成循环。修复：该写入改为可失败跳过（解锁后任意一次进程启动补写）；`Application.onCreate` 以 `UserManager.isUserUnlocked` 为准提前返回（`isDeviceProtectedStorage` 在解锁过渡期不可靠）；友盟初始化整体 try-catch。
 4. **移除 XSP 旧机制**：`XSharedPreferences` 删除文件直读 XML 的全套路径（`reload()`/`parse()`/候选路径/`File` 构造降级为仅取名的兼容壳）与 `getFile()`——现代 SELinux 下宿主进程永远读不到模块私有文件，属死代码；通道诊断改为 `provider=P 远程=R`；删除 manifest 中遗留的 `xposedsharedprefs` 标记与 `XposedHelper` 的文件路径回退。
 
+**v9（最终，推荐）**：**撤除 v8 的电池着色守卫**——真机实测：重启系统界面使守卫生效后，电量变色问题反而**加重并扩散到电池图标**，证明"以时钟色为参照强制改写 `mFilterColor`"对 ROM 着色管线的假设有误（图标本体的合法着色并非时钟色，改写 + 触发重绘污染了图标）。整套移除（含尚未发布的右侧图标集群守卫），systemui 侧完全恢复 v7 行为。v8 其余修复全部保留：Direct Boot 崩溃循环修复（`IllegalStateException: SharedPreferences in credential encrypted storage are not available…`）、stopped 唤醒广播、XSP 旧机制清除。变色 bug 根因维持 FlymeTool 归因（此前 A/B 测试已证实与本模块无关）。
+
 ## 四、激活自检移除
 
 `MainActivity.checkEnable()`（弹"检测到插件尚未在框架中激活"）与 `checkDialog()`（`MODE_WORLD_READABLE` 抛异常即弹"插件配置初始化失败"并杀进程）已删除。原设计靠旧框架把模块注入自身 App 进程 hook `isEnable` 自证——新 API 按 scope.list 严格注入，检测必然误报。两条文案在成品 dex/资源中零残留。
@@ -76,7 +78,8 @@ LSPosed 官方已移除现代 API 的资源 hook（Wiki："Resource hooks are re
 - `Flyme10助手_4.6.12_libxposed102_v5_signed.apk`（Provider 实时配置通道）
 - `Flyme10助手_4.6.12_libxposed102_v6_signed.apk`（DE 存储 + directBootAware + 移除主题试用）
 - `Flyme10助手_4.6.12_libxposed102_v7_signed.apk`（替换保留样式 Span + 命中诊断日志）
-- `Flyme10助手_4.6.12_libxposed102_v8_signed.apk`（电池着色守卫 + stopped 唤醒 + 崩溃循环修复 + 移除 XSP 旧机制，最终版）
+- `Flyme10助手_4.6.12_libxposed102_v8_signed.apk`（电池着色守卫 + stopped 唤醒 + 崩溃循环修复 + 移除 XSP 旧机制——**守卫经真机实测有害，已被 v9 撤除，不推荐使用**）
+- `Flyme10助手_4.6.12_libxposed102_v9_signed.apk`（v8 基础上撤除电池着色守卫，最终版）
 
 ## 七、已知限制与注意事项
 
